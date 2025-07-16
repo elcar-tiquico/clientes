@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 # Configuração da base de dados
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 'mysql+pymysql://root:@localhost/plantas_medicinais'
+    'DATABASE_URL'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JSON_AS_ASCII'] = False
