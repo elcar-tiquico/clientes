@@ -25,7 +25,7 @@ app.config['JSON_AS_ASCII'] = False
 
 # Inicializar extensões
 db = SQLAlchemy(app)
-CORS(app, origins=["https://front-pm.vercel.app"])
+CORS(app, "*")
 # MODELOS ATUALIZADOS PARA A NOVA ESTRUTURA
 
 class Familia(db.Model):
@@ -2203,7 +2203,7 @@ def get_full_image_url(planta_id, filename, request_obj=None):
     except Exception as e:
         # Fallback para desenvolvimento
         print(f"⚠️ Erro ao gerar URL da imagem: {e}")
-        return f"http://localhost:5000/uploads/plantas_imagens/{planta_id}/{filename}"
+        return f"https://clientes-clientes.up.railway.app/uploads/plantas_imagens/{planta_id}/{filename}"
 
 
 @app.route('/api/plantas/<int:planta_id>/imagens', methods=['GET'])
