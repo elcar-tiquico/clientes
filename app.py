@@ -25,7 +25,7 @@ app.config['JSON_AS_ASCII'] = False
 
 # Inicializar extensões
 db = SQLAlchemy(app)
-CORS(app, "*")
+CORS(app, origins="*")
 # MODELOS ATUALIZADOS PARA A NOVA ESTRUTURA
 
 class Familia(db.Model):
