@@ -931,61 +931,73 @@ def get_correlacoes_planta_indicacao():
 
 @app.route('/api/plantas/<int:id_planta>', methods=['GET'])
 def get_planta(id_planta):
-    """VERSÃO COM TRACKING POR CLIQUE - Mede interesse real"""
-    try:
-        # Lógica original mantida
-        planta = Planta.query.get_or_404(id_planta)
-        
-        # ✅ TRACKING INTELIGENTE POR CLIQUE
-        try:
-            # Analisar os parâmetros de query para entender como chegou aqui
-            referrer = request.headers.get('Referer', '')
-            search_source = request.args.get('search_source', '')  # Parâmetro opcional do frontend
-            search_term = request.args.get('search_term', '')      # Parâmetro opcional do frontend
-            search_type = request.args.get('search_type', '')      # Parâmetro opcional do frontend
-            
-            # Determinar termo e tipo da pesquisa original
-            termo_pesquisa = None
-            tipo_pesquisa = 'nome_cientifico'  # Padrão: assume interesse no nome científico
-            
-            # ===== LÓGICA INTELIGENTE DE DETECÇÃO =====
-            
-            # OPÇÃO 1: Frontend passa parâmetros (recomendado)
-            if search_term and search_type:
-                termo_pesquisa = search_term.strip()
-                tipo_pesquisa = search_type
-                print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
-            
-            # OPÇÃO 2: Usar nome da planta (fallback)
-            else:
-                # Prioridade: nome comum se existir, senão científico
-                if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
-                    termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
-                    tipo_pesquisa = 'nome_popular'
-                else:
-                    termo_pesquisa = planta.nome_cientifico
-                    tipo_pesquisa = 'nome_cientifico'
-                print(f"🎯 Tracking via nome da planta: {termo_pesquisa} ({tipo_pesquisa})")
-            
-            # ===== REGISTAR CLIQUE COMO INTERESSE REAL =====
-            if termo_pesquisa:
-                registar_pesquisa_segura(
-                    termo=termo_pesquisa,
-                    tipo=tipo_pesquisa,
-                    resultados=1,  # Sempre 1 porque clicou numa planta específica
-                    request_obj=request
-                )
-                
-        except Exception as tracking_error:
-            # Se o tracking falhar, apenas log - NÃO afetar a resposta
-            print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
-        
-        # Resposta original mantida
-        return jsonify(planta.to_dict(include_relations=True))
-        
-    except Exception as e:
-        # Tratamento de erro original mantido
-        return handle_error(e)
+   """VERSÃO CORRIGIDA COM EAGER LOADING - Resolve o erro 500"""
+   try:
+       # ✅ SOLUÇÃO: Eager loading para carregar todos os relacionamentos numa única query
+       from sqlalchemy.orm import joinedload, selectinload
+       
+       planta = Planta.query.options(
+           # Relacionamentos many-to-many básicos
+           selectinload(Planta.autores),
+           selectinload(Planta.provincias),
+           selectinload(Planta.propriedades),
+           selectinload(Planta.compostos),
+           selectinload(Planta.referencias),
+           
+           # Relacionamentos complexos com nested loading
+           selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
+           selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
+           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
+           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao),
+           
+           # Relacionamentos diretos
+           selectinload(Planta.nomes_comuns),
+           selectinload(Planta.imagens),
+           
+           # Família (many-to-one)
+           joinedload(Planta.familia)
+       ).get_or_404(id_planta)
+       
+       # ✅ TRACKING INTELIGENTE POR CLIQUE (código original mantido)
+       try:
+           referrer = request.headers.get('Referer', '')
+           search_source = request.args.get('search_source', '')
+           search_term = request.args.get('search_term', '')
+           search_type = request.args.get('search_type', '')
+           
+           termo_pesquisa = None
+           tipo_pesquisa = 'nome_cientifico'
+           
+           if search_term and search_type:
+               termo_pesquisa = search_term.strip()
+               tipo_pesquisa = search_type
+               print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
+           else:
+               if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
+                   termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
+                   tipo_pesquisa = 'nome_popular'
+               else:
+                   termo_pesquisa = planta.nome_cientifico
+                   tipo_pesquisa = 'nome_cientifico'
+               print(f"🎯 Tracking fallback: {termo_pesquisa} ({tipo_pesquisa})")
+           
+           if termo_pesquisa:
+               registar_pesquisa_segura(
+                   termo=termo_pesquisa,
+                   tipo=tipo_pesquisa,
+                   resultados=1,
+                   request_obj=request
+               )
+               
+       except Exception as tracking_error:
+           print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
+       
+       # ✅ Agora todos os relacionamentos estão carregados, sem lazy loading
+       return jsonify(planta.to_dict(include_relations=True))
+       
+   except Exception as e:
+       print(f"❌ Erro ao carregar planta {id_planta}: {str(e)}")
+       return handle_error(e, f"Erro ao carregar detalhes da planta {id_planta}")
 
 @app.route('/api/plantas', methods=['POST'])
 def create_planta():
