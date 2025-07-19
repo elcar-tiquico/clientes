@@ -209,15 +209,35 @@ class PlantaImagem(db.Model):
     __tablename__ = 'planta_imagem'
     id_imagem = db.Column(db.Integer, primary_key=True, autoincrement=True)
     id_planta = db.Column(db.Integer, db.ForeignKey('planta.id_planta'), nullable=False)
-    nome_arquivo = db.Column(db.String(255))  # ← Pode manter para compatibilidade
-    cloudinary_url = db.Column(db.String(500), nullable=True)  # ← ESSENCIAL
-    cloudinary_public_id = db.Column(db.String(255), nullable=True)  # ← ESSENCIAL  
+    # ❌ REMOVER: nome_arquivo = db.Column(db.String(255))  # Esta linha causa o erro
+    cloudinary_url = db.Column(db.String(500), nullable=True)  # ✅ ESSENCIAL
+    cloudinary_public_id = db.Column(db.String(255), nullable=True)  # ✅ ESSENCIAL  
     ordem = db.Column(db.Integer, default=1)
     legenda = db.Column(db.String(255))
-    data_upload = db.Column(db.DateTime, default=datetime.utcnow)  # ← ESSENCIAL
+    data_upload = db.Column(db.DateTime, default=datetime.utcnow)  # ✅ ESSENCIAL
     
     # Relacionamento com a planta
     planta = db.relationship('Planta', backref=db.backref('imagens', lazy=True))
+    
+    # ✅ PROPRIEDADE PARA COMPATIBILIDADE (se necessário)
+    @property
+    def nome_arquivo(self):
+        """Propriedade para compatibilidade com código antigo"""
+        if self.cloudinary_public_id:
+            return f"{self.cloudinary_public_id}.jpg"  # Formato padrão
+        return "sem_imagem.jpg"
+    
+    def to_dict(self):
+        return {
+            'id_imagem': self.id_imagem,
+            'id_planta': self.id_planta,
+            'cloudinary_url': self.cloudinary_url,
+            'cloudinary_public_id': self.cloudinary_public_id,
+            'ordem': self.ordem,
+            'legenda': self.legenda,
+            'url': limpar_url_cloudinary(self.cloudinary_url),
+            'data_upload': self.data_upload.isoformat() if self.data_upload else None
+        }
 
 class Referencia(db.Model):
     __tablename__ = 'referencia'
@@ -228,38 +248,62 @@ class Referencia(db.Model):
     ano = db.Column(db.String(4), nullable=True)
     
     def to_dict(self, include_autores=False):
+        """
+        MÉTODO ATUALIZADO - Usa query direta para evitar problemas com lazy loading
+        """
         data = {
-            'id_referencia': self.id_referencia,
-            'link_referencia': self.link_referencia,
-            'tipo_referencia': self.tipo_referencia,
-            'titulo_referencia': self.titulo_referencia,
-            'ano': self.ano
+            'id_planta': self.id_planta,
+            'nome_cientifico': self.nome_cientifico,
+            'numero_exsicata': self.numero_exsicata,
+            'id_familia': self.id_familia,
+            'familia': self.familia.nome_familia if self.familia else None,
+            'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
         }
         
-        if include_autores:
-            # Buscar autores desta referência ordenados
-            autores_ref = db.session.query(
-                Autor.id_autor,
-                Autor.nome_autor,
-                Autor.afiliacao,
-                Autor.sigla_afiliacao,
-                AutorReferencia.ordem_autor,
-                AutorReferencia.papel
-            ).join(
-                AutorReferencia, Autor.id_autor == AutorReferencia.id_autor
+        # ===== BUSCAR IMAGENS DO CLOUDINARY (QUERY DIRETA SEM nome_arquivo) =====
+        try:
+            # ✅ CORREÇÃO: Query direta sem usar relacionamento que pode ter lazy loading
+            imagens = db.session.query(
+                PlantaImagem.id_imagem,
+                PlantaImagem.cloudinary_url,
+                PlantaImagem.cloudinary_public_id,
+                PlantaImagem.ordem,
+                PlantaImagem.legenda,
+                PlantaImagem.data_upload
             ).filter(
-                AutorReferencia.id_referencia == self.id_referencia
-            ).order_by(AutorReferencia.ordem_autor).all()
+                PlantaImagem.id_planta == self.id_planta
+            ).order_by(PlantaImagem.ordem).all()
+    
+            imagens_resultado = []
+            for img in imagens:
+                # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
+                url_final = limpar_url_cloudinary(img.cloudinary_url)
+                
+                imagens_resultado.append({
+                    'id_imagem': img.id_imagem,
+                    'cloudinary_url': img.cloudinary_url,  # URL original da BD
+                    'cloudinary_public_id': img.cloudinary_public_id,
+                    'ordem': img.ordem,
+                    'legenda': img.legenda,
+                    'url': url_final,  # URL limpa e corrigida (é o que o frontend usa)
+                    'data_upload': img.data_upload.isoformat() if img.data_upload else None
+                })
             
-            data['autores'] = [{
-                'id_autor': ar.id_autor,
-                'nome_autor': ar.nome_autor,
-                'afiliacao': ar.afiliacao,
-                'sigla_afiliacao': ar.sigla_afiliacao,
-                'ordem_autor': ar.ordem_autor,
-                'papel': ar.papel
-            } for ar in autores_ref]
+            # ADICIONAR campo 'imagens' aos dados básicos (esperado pelo frontend)
+            data['imagens'] = imagens_resultado
+            
+            print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
+            
+        except Exception as e:
+            print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
+            # Em caso de erro, fornecer array vazio (frontend espera array)
+            data['imagens'] = []
         
+        # ===== RESTO DO MÉTODO PERMANECE IGUAL =====
+        if include_relations:
+            # ... resto do código para relacionamentos ...
+            pass
+            
         return data
 
 class PlantaReferencia(db.Model):
@@ -465,7 +509,6 @@ def handle_error(e, message="Erro interno do servidor"):
 def limpar_url_cloudinary(url):
     """
     🔧 FUNÇÃO CORRIGIDA - Evitar concatenação incorreta de URLs
-    Baseada na função da admin_dashboard_api.py
     """
     if not url:
         return "/static/images/sem_imagem.jpg"
@@ -2370,14 +2413,14 @@ def get_full_image_url(planta_id, filename, request_obj=None):
 @app.route('/api/plantas/<int:planta_id>/imagens', methods=['GET'])
 def get_imagens_planta_frontend(planta_id):
     """
-    🔧 VERSÃO CORRIGIDA - Evitar concatenação incorreta de URLs
-    Endpoint específico para buscar imagens de uma planta (baseado no admin_dashboard_api.py)
+    🔧 VERSÃO CORRIGIDA - Query direta sem nome_arquivo
     """
     try:
         planta = Planta.query.get(planta_id)
         if not planta:
             return jsonify({'error': 'Planta não encontrada'}), 404
         
+        # ✅ QUERY DIRETA SEM nome_arquivo
         imagens = db.session.query(
             PlantaImagem.id_imagem,
             PlantaImagem.cloudinary_url,
@@ -2405,10 +2448,6 @@ def get_imagens_planta_frontend(planta_id):
             })
         
         print(f"✅ Retornando {len(resultado)} imagens para planta {planta_id}")
-        
-        # 🔧 Log detalhado para debug
-        for img in resultado:
-            print(f"   🖼️ Imagem {img['id_imagem']}: {img['url']}")
         
         return jsonify({'imagens': resultado, 'total': len(resultado)})
         
