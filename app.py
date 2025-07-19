@@ -61,8 +61,8 @@ class Planta(db.Model):
     
     def to_dict(self, include_relations=False):
         """
-        SUBSTITUI o método to_dict existente na classe Planta
-        Inclui suporte ao Cloudinary + mantém relacionamentos originais
+        MÉTODO ATUALIZADO - Inclui imagens do Cloudinary
+        Mantém estrutura original + adiciona campo 'imagens' compatível com frontend
         """
         data = {
             'id_planta': self.id_planta,
@@ -73,8 +73,51 @@ class Planta(db.Model):
             'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
         }
         
+        # ===== BUSCAR IMAGENS DO CLOUDINARY (mesma lógica da admin_dashboard_api.py) =====
+        try:
+            imagens = db.session.query(
+                PlantaImagem.id_imagem,
+                PlantaImagem.cloudinary_url,
+                PlantaImagem.cloudinary_public_id,
+                PlantaImagem.ordem,
+                PlantaImagem.legenda,
+                PlantaImagem.data_upload
+            ).filter(
+                PlantaImagem.id_planta == self.id_planta
+            ).order_by(PlantaImagem.ordem).all()
+    
+            imagens_resultado = []
+            for img in imagens:
+                # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
+                url_final = limpar_url_cloudinary(img.cloudinary_url)
+                
+                imagens_resultado.append({
+                    'id_imagem': img.id_imagem,
+                    'cloudinary_url': img.cloudinary_url,  # URL original da BD
+                    'cloudinary_public_id': img.cloudinary_public_id,
+                    'ordem': img.ordem,
+                    'legenda': img.legenda,
+                    'url': url_final,  # URL limpa e corrigida (é o que o frontend usa)
+                    'data_upload': img.data_upload.isoformat() if img.data_upload else None
+                })
+            
+            # ADICIONAR campo 'imagens' aos dados básicos (esperado pelo frontend)
+            data['imagens'] = imagens_resultado
+            
+            print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
+            
+            # 🔧 Log detalhado para debug (igual ao admin_dashboard_api.py)
+            for img in imagens_resultado:
+                print(f"   🖼️ Imagem {img['id_imagem']}: {img['url']}")
+            
+        except Exception as e:
+            print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
+            # Em caso de erro, fornecer array vazio (frontend espera array)
+            data['imagens'] = []
+        
+        # ===== MANTER TODA A LÓGICA ORIGINAL DE include_relations =====
         if include_relations:
-            # ESTRUTURA EXISTENTE: Buscar partes usadas com indicações específicas através de Uso_Planta
+            # Buscar partes usadas com indicações específicas através de UsoPlanta
             partes_com_indicacoes = []
             for uso in self.usos_planta:
                 parte_data = {
@@ -90,34 +133,6 @@ class Planta(db.Model):
                 partes_com_indicacoes.append(parte_data)
             
             data['partes_com_indicacoes'] = partes_com_indicacoes
-            
-            # ADICIONAR tratamento de imagens do Cloudinary
-            if hasattr(self, 'imagens'):
-                imagens_data = []
-                for img in self.imagens:
-                    # Gerar URLs do Cloudinary
-                    if hasattr(img, 'cloudinary_public_id') and img.cloudinary_public_id:
-                        url = get_cloudinary_image_url(img.cloudinary_public_id)
-                        thumbnail_url = get_cloudinary_thumbnail_url(img.cloudinary_public_id)
-                    elif hasattr(img, 'cloudinary_url') and img.cloudinary_url:
-                        url = img.cloudinary_url
-                        thumbnail_url = img.cloudinary_url
-                    else:
-                        # Fallback para sistema antigo
-                        url = f'/uploads/plantas_imagens/{self.id_planta}/{img.nome_arquivo}' if hasattr(img, 'nome_arquivo') else '/static/images/sem_imagem.jpg'
-                        thumbnail_url = url
-                    
-                    imagens_data.append({
-                        'id_imagem': img.id_imagem,
-                        'nome_arquivo': img.nome_arquivo if hasattr(img, 'nome_arquivo') else 'image.jpg',
-                        'ordem': img.ordem,
-                        'legenda': img.legenda,
-                        'url': url,
-                        'thumbnail_url': thumbnail_url,
-                        'data_upload': img.data_upload.isoformat() if img.data_upload else None
-                    })
-                
-                data['imagens'] = imagens_data
             
             # MANTER outros relacionamentos se existirem
             if hasattr(self, 'autores'):
@@ -194,10 +209,12 @@ class PlantaImagem(db.Model):
     __tablename__ = 'planta_imagem'
     id_imagem = db.Column(db.Integer, primary_key=True, autoincrement=True)
     id_planta = db.Column(db.Integer, db.ForeignKey('planta.id_planta'), nullable=False)
-    nome_arquivo = db.Column(db.String(255), nullable=False)
+    nome_arquivo = db.Column(db.String(255))  # ← Pode manter para compatibilidade
+    cloudinary_url = db.Column(db.String(500), nullable=True)  # ← ESSENCIAL
+    cloudinary_public_id = db.Column(db.String(255), nullable=True)  # ← ESSENCIAL  
     ordem = db.Column(db.Integer, default=1)
-    legenda = db.Column(db.Text)
-    data_upload = db.Column(db.DateTime, default=datetime.utcnow)
+    legenda = db.Column(db.String(255))
+    data_upload = db.Column(db.DateTime, default=datetime.utcnow)  # ← ESSENCIAL
     
     # Relacionamento com a planta
     planta = db.relationship('Planta', backref=db.backref('imagens', lazy=True))
@@ -444,6 +461,27 @@ UsoPlanta.metodos_extracao = db.relationship('MetodoExtracao', secondary='uso_pl
 def handle_error(e, message="Erro interno do servidor"):
     print(f"Erro: {str(e)}")
     return jsonify({'error': message, 'details': str(e)}), 500
+
+def limpar_url_cloudinary(url):
+    """
+    🔧 FUNÇÃO CORRIGIDA - Evitar concatenação incorreta de URLs
+    Baseada na função da admin_dashboard_api.py
+    """
+    if not url:
+        return "/static/images/sem_imagem.jpg"
+    
+    # Remover duplicações de prefixo
+    if url.count('https://res.cloudinary.com/') > 1:
+        parts = url.split('https://res.cloudinary.com/')
+        if len(parts) > 2:
+            url = 'https://res.cloudinary.com/' + parts[-1]
+    
+    # Validar se é uma URL válida do Cloudinary
+    if 'res.cloudinary.com' in url and url.startswith('https://'):
+        return url
+    
+    # Fallback para imagem padrão
+    return "/static/images/sem_imagem.jpg"
 
 def registar_pesquisa_segura(termo, tipo='nome_comum', resultados=0, request_obj=None):
     """
@@ -2332,51 +2370,47 @@ def get_full_image_url(planta_id, filename, request_obj=None):
 @app.route('/api/plantas/<int:planta_id>/imagens', methods=['GET'])
 def get_imagens_planta_frontend(planta_id):
     """
-    SUBSTITUI o endpoint existente para usar Cloudinary
+    🔧 VERSÃO CORRIGIDA - Evitar concatenação incorreta de URLs
+    Endpoint específico para buscar imagens de uma planta (baseado no admin_dashboard_api.py)
     """
     try:
-        print(f"📸 Buscando imagens para planta {planta_id} (Cloudinary)")
-        
-        # Verificar se a planta existe
         planta = Planta.query.get(planta_id)
         if not planta:
             return jsonify({'error': 'Planta não encontrada'}), 404
         
-        # Buscar imagens da planta
-        imagens = PlantaImagem.query.filter_by(id_planta=planta_id).order_by(PlantaImagem.ordem).all()
+        imagens = db.session.query(
+            PlantaImagem.id_imagem,
+            PlantaImagem.cloudinary_url,
+            PlantaImagem.cloudinary_public_id,
+            PlantaImagem.ordem,
+            PlantaImagem.legenda,
+            PlantaImagem.data_upload
+        ).filter(
+            PlantaImagem.id_planta == planta_id
+        ).order_by(PlantaImagem.ordem).all()
         
         resultado = []
         for img in imagens:
-            # Gerar URLs do Cloudinary se existir public_id
-            if hasattr(img, 'cloudinary_public_id') and img.cloudinary_public_id:
-                url_principal = get_cloudinary_image_url(img.cloudinary_public_id)
-                url_thumbnail = get_cloudinary_thumbnail_url(img.cloudinary_public_id)
-            elif hasattr(img, 'cloudinary_url') and img.cloudinary_url:
-                url_principal = img.cloudinary_url
-                url_thumbnail = img.cloudinary_url
-            else:
-                # Fallback para sistema antigo
-                url_principal = f'/uploads/plantas_imagens/{planta_id}/{img.nome_arquivo}'
-                url_thumbnail = url_principal
+            # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
+            url_final = limpar_url_cloudinary(img.cloudinary_url)
             
             resultado.append({
                 'id_imagem': img.id_imagem,
-                'nome_arquivo': img.nome_arquivo if hasattr(img, 'nome_arquivo') else 'image.jpg',
+                'cloudinary_url': img.cloudinary_url,  # URL original da BD
+                'cloudinary_public_id': img.cloudinary_public_id,
                 'ordem': img.ordem,
-                'legenda': img.legenda or '',
-                'url': url_principal,
-                'thumbnail_url': url_thumbnail,
+                'legenda': img.legenda,
+                'url': url_final,  # URL limpa e corrigida
                 'data_upload': img.data_upload.isoformat() if img.data_upload else None
             })
         
         print(f"✅ Retornando {len(resultado)} imagens para planta {planta_id}")
         
-        return jsonify({
-            'imagens': resultado, 
-            'total': len(resultado),
-            'planta_id': planta_id,
-            'planta_nome': planta.nome_cientifico
-        })
+        # 🔧 Log detalhado para debug
+        for img in resultado:
+            print(f"   🖼️ Imagem {img['id_imagem']}: {img['url']}")
+        
+        return jsonify({'imagens': resultado, 'total': len(resultado)})
         
     except Exception as e:
         print(f"❌ Erro ao carregar imagens da planta {planta_id}: {e}")
@@ -2385,34 +2419,13 @@ def get_imagens_planta_frontend(planta_id):
 # Also need to ensure CORS headers for image serving endpoint:
 @app.route('/uploads/plantas_imagens/<int:planta_id>/<filename>')
 def serve_plant_image(planta_id, filename):
-    """
-    SUBSTITUI o endpoint existente para redirecionar para Cloudinary
-    """
+    """Servir imagens locais - fallback para compatibilidade"""
     try:
-        # Buscar a imagem no banco para obter o public_id
-        imagem = PlantaImagem.query.filter_by(id_planta=planta_id).first()
-        
-        if imagem:
-            # Se tem dados do Cloudinary, redirecionar
-            if hasattr(imagem, 'cloudinary_public_id') and imagem.cloudinary_public_id:
-                cloudinary_url = get_cloudinary_image_url(imagem.cloudinary_public_id)
-                from flask import redirect
-                return redirect(cloudinary_url, 301)  # Redirect permanente
-            elif hasattr(imagem, 'cloudinary_url') and imagem.cloudinary_url:
-                from flask import redirect
-                return redirect(imagem.cloudinary_url, 301)
-        
-        # Fallback para sistema antigo (se não encontrar imagem no banco OU não tem dados Cloudinary)
-        try:
-            from flask import send_from_directory
-            planta_folder = os.path.join(UPLOAD_FOLDER, str(planta_id))
-            return send_from_directory(planta_folder, filename)
-        except:
-            return jsonify({'error': 'Imagem não encontrada'}), 404
-            
+        planta_folder = os.path.join(UPLOAD_FOLDER, str(planta_id))
+        return send_from_directory(planta_folder, filename)
     except Exception as e:
-        print(f"❌ Erro ao servir imagem {filename}: {e}")
-        return jsonify({'error': 'Erro ao carregar imagem'}), 404
+        # Retornar erro 404 se imagem local não encontrada
+        return jsonify({'error': 'Imagem não encontrada'}), 404
 
 def get_planta_images_info(planta_id):
     """
