@@ -9,11 +9,18 @@ from datetime import datetime
 from datetime import datetime
 from dotenv import load_dotenv
 from werkzeug.exceptions import NotFound
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 load_dotenv()
 
 #UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'plantas_imagens')
 UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'D:\\Elcar\\uploads\\plantas_imagens')
-
+cloudinary.config(
+    cloud_name="dlwth3wsa",
+    api_key="594323156311546", 
+    api_secret="PtfVAwDWYXTcMKpm2HPcgGkCJtU"
+)
 app = Flask(__name__)
 
 # Configuração da base de dados
@@ -53,6 +60,10 @@ class Planta(db.Model):
     usos_planta = db.relationship('UsoPlanta', backref='planta', lazy=True, cascade="all, delete-orphan")
     
     def to_dict(self, include_relations=False):
+        """
+        SUBSTITUI o método to_dict existente na classe Planta
+        Inclui suporte ao Cloudinary + mantém relacionamentos originais
+        """
         data = {
             'id_planta': self.id_planta,
             'nome_cientifico': self.nome_cientifico,
@@ -63,7 +74,7 @@ class Planta(db.Model):
         }
         
         if include_relations:
-            # NOVA ESTRUTURA: Buscar partes usadas com indicações específicas através de Uso_Planta
+            # ESTRUTURA EXISTENTE: Buscar partes usadas com indicações específicas através de Uso_Planta
             partes_com_indicacoes = []
             for uso in self.usos_planta:
                 parte_data = {
@@ -71,38 +82,87 @@ class Planta(db.Model):
                     'parte_usada': uso.parte_usada.parte_usada,
                     'indicacoes': [{'id_indicacao': ind.id_indicacao, 'descricao': ind.descricao} 
                                   for ind in uso.indicacoes],
-                    'metodos_preparacao': [{'id_preparacao': mp.id_preparacao, 'descricao': mp.descricao} 
-                                          for mp in uso.metodos_preparacao],
-                    'metodos_extracao': [{'id_extraccao': me.id_extraccao, 'descricao': me.descricao} 
-                                        for me in uso.metodos_extracao],
-                    'observacoes': uso.observacoes
+                    'metodos_preparacao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
+                                         for met in uso.metodos_preparacao],
+                    'metodos_extracao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
+                                       for met in uso.metodos_extracao]
                 }
                 partes_com_indicacoes.append(parte_data)
             
-            referencias_com_autores = []
-            for ref in self.referencias:
-                ref_data = ref.to_dict(include_autores=True)
-                referencias_com_autores.append(ref_data)
-
-
-            data.update({
-                'autores': [autor.to_dict() for autor in self.autores],
-                'provincias': [provincia.to_dict() for provincia in self.provincias],
-                'partes_usadas': partes_com_indicacoes,  # ← CORRIGIDO: agora usa estrutura específica
-                'propriedades': [prop.to_dict() for prop in self.propriedades],
-                'compostos': [comp.to_dict() for comp in self.compostos],
-                'referencias': referencias_com_autores,
-                'imagens': [
-                    {
+            data['partes_com_indicacoes'] = partes_com_indicacoes
+            
+            # ADICIONAR tratamento de imagens do Cloudinary
+            if hasattr(self, 'imagens'):
+                imagens_data = []
+                for img in self.imagens:
+                    # Gerar URLs do Cloudinary
+                    if hasattr(img, 'cloudinary_public_id') and img.cloudinary_public_id:
+                        url = get_cloudinary_image_url(img.cloudinary_public_id)
+                        thumbnail_url = get_cloudinary_thumbnail_url(img.cloudinary_public_id)
+                    elif hasattr(img, 'cloudinary_url') and img.cloudinary_url:
+                        url = img.cloudinary_url
+                        thumbnail_url = img.cloudinary_url
+                    else:
+                        # Fallback para sistema antigo
+                        url = f'/uploads/plantas_imagens/{self.id_planta}/{img.nome_arquivo}' if hasattr(img, 'nome_arquivo') else '/static/images/sem_imagem.jpg'
+                        thumbnail_url = url
+                    
+                    imagens_data.append({
                         'id_imagem': img.id_imagem,
-                        'nome_arquivo': img.nome_arquivo,
+                        'nome_arquivo': img.nome_arquivo if hasattr(img, 'nome_arquivo') else 'image.jpg',
                         'ordem': img.ordem,
-                        'legenda': img.legenda or '',
-                        'url': get_full_image_url(self.id_planta, img.nome_arquivo),
+                        'legenda': img.legenda,
+                        'url': url,
+                        'thumbnail_url': thumbnail_url,
                         'data_upload': img.data_upload.isoformat() if img.data_upload else None
-                    } for img in self.imagens
-                ] 
-            })
+                    })
+                
+                data['imagens'] = imagens_data
+            
+            # MANTER outros relacionamentos se existirem
+            if hasattr(self, 'autores'):
+                data['autores'] = [
+                    {
+                        'id_autor': autor.id_autor,
+                        'nome_autor': autor.nome_autor,
+                        'afiliacao': autor.afiliacao
+                    } for autor in self.autores
+                ]
+            
+            if hasattr(self, 'provincias'):
+                data['provincias'] = [
+                    {
+                        'id_provincia': prov.id_provincia,
+                        'nome_provincia': prov.nome_provincia
+                    } for prov in self.provincias
+                ]
+            
+            if hasattr(self, 'propriedades'):
+                data['propriedades'] = [
+                    {
+                        'id_propriedade': prop.id_propriedade,
+                        'descricao': prop.descricao
+                    } for prop in self.propriedades
+                ]
+            
+            if hasattr(self, 'compostos'):
+                data['compostos'] = [
+                    {
+                        'id_composto': comp.id_composto,
+                        'nome_composto': comp.nome_composto
+                    } for comp in self.compostos
+                ]
+            
+            if hasattr(self, 'referencias'):
+                data['referencias'] = [
+                    {
+                        'id_referencia': ref.id_referencia,
+                        'titulo': ref.titulo,
+                        'tipo_referencia': ref.tipo_referencia,
+                        'ano': ref.ano,
+                        'link': ref.link
+                    } for ref in self.referencias
+                ]
         
         return data
 
@@ -426,6 +486,57 @@ def registar_pesquisa_segura(termo, tipo='nome_comum', resultados=0, request_obj
             pass
         print(f"⚠️ Erro ao registar pesquisa (não afeta funcionamento): {e}")
         return False
+
+def get_cloudinary_image_url(public_id, transformation=None):
+    """
+    Gerar URL otimizada de uma imagem do Cloudinary
+    """
+    try:
+        if not public_id:
+            return "/static/images/sem_imagem.jpg"
+        
+        if transformation is None:
+            transformation = [
+                {'width': 800, 'height': 800, 'crop': 'limit'},
+                {'quality': 'auto:good'},
+                {'format': 'auto'}
+            ]
+        
+        url = cloudinary.utils.cloudinary_url(
+            public_id,
+            transformation=transformation
+        )[0]
+        
+        return url
+        
+    except Exception as e:
+        print(f"❌ Erro ao gerar URL do Cloudinary: {e}")
+        return "/static/images/sem_imagem.jpg"
+
+def get_cloudinary_thumbnail_url(public_id, width=300, height=300):
+    """
+    Gerar URL de thumbnail de uma imagem do Cloudinary
+    """
+    try:
+        if not public_id:
+            return "/static/images/sem_imagem.jpg"
+        
+        transformation = [
+            {'width': width, 'height': height, 'crop': 'fill'},
+            {'quality': 'auto:good'},
+            {'format': 'auto'}
+        ]
+        
+        url = cloudinary.utils.cloudinary_url(
+            public_id,
+            transformation=transformation
+        )[0]
+        
+        return url
+        
+    except Exception as e:
+        print(f"❌ Erro ao gerar thumbnail do Cloudinary: {e}")
+        return "/static/images/sem_imagem.jpg"
 
 # ROTAS - FAMÍLIAS
 @app.route('/api/familias', methods=['GET'])
@@ -2209,11 +2320,10 @@ def get_full_image_url(planta_id, filename, request_obj=None):
 @app.route('/api/plantas/<int:planta_id>/imagens', methods=['GET'])
 def get_imagens_planta_frontend(planta_id):
     """
-    Buscar imagens de uma planta para o frontend
-    Endpoint principal para carregar imagens nas páginas
+    SUBSTITUI o endpoint existente para usar Cloudinary
     """
     try:
-        print(f"📸 Buscando imagens para planta {planta_id} (frontend)")
+        print(f"📸 Buscando imagens para planta {planta_id} (Cloudinary)")
         
         # Verificar se a planta existe
         planta = Planta.query.get(planta_id)
@@ -2225,15 +2335,25 @@ def get_imagens_planta_frontend(planta_id):
         
         resultado = []
         for img in imagens:
-            # Gerar URL completa para cada imagem
-            image_url = get_full_image_url(planta_id, img.nome_arquivo)
+            # Gerar URLs do Cloudinary se existir public_id
+            if hasattr(img, 'cloudinary_public_id') and img.cloudinary_public_id:
+                url_principal = get_cloudinary_image_url(img.cloudinary_public_id)
+                url_thumbnail = get_cloudinary_thumbnail_url(img.cloudinary_public_id)
+            elif hasattr(img, 'cloudinary_url') and img.cloudinary_url:
+                url_principal = img.cloudinary_url
+                url_thumbnail = img.cloudinary_url
+            else:
+                # Fallback para sistema antigo
+                url_principal = f'/uploads/plantas_imagens/{planta_id}/{img.nome_arquivo}'
+                url_thumbnail = url_principal
             
             resultado.append({
                 'id_imagem': img.id_imagem,
-                'nome_arquivo': img.nome_arquivo,
+                'nome_arquivo': img.nome_arquivo if hasattr(img, 'nome_arquivo') else 'image.jpg',
                 'ordem': img.ordem,
                 'legenda': img.legenda or '',
-                'url': image_url,
+                'url': url_principal,
+                'thumbnail_url': url_thumbnail,
                 'data_upload': img.data_upload.isoformat() if img.data_upload else None
             })
         
@@ -2254,36 +2374,30 @@ def get_imagens_planta_frontend(planta_id):
 @app.route('/uploads/plantas_imagens/<int:planta_id>/<filename>')
 def serve_plant_image(planta_id, filename):
     """
-    Servir imagens das plantas com headers CORS corretos
+    SUBSTITUI o endpoint existente para redirecionar para Cloudinary
     """
     try:
-        # Verificar se a pasta da planta existe
-        planta_folder = os.path.join(UPLOAD_FOLDER, str(planta_id))
+        # Buscar a imagem no banco para obter o public_id
+        imagem = PlantaImagem.query.filter_by(id_planta=planta_id).first()
         
-        if not os.path.exists(planta_folder):
-            print(f"❌ Pasta da planta {planta_id} não encontrada: {planta_folder}")
-            return jsonify({'error': 'Pasta da planta não encontrada'}), 404
+        if imagem:
+            # Se tem dados do Cloudinary, redirecionar
+            if hasattr(imagem, 'cloudinary_public_id') and imagem.cloudinary_public_id:
+                cloudinary_url = get_cloudinary_image_url(imagem.cloudinary_public_id)
+                from flask import redirect
+                return redirect(cloudinary_url, 301)  # Redirect permanente
+            elif hasattr(imagem, 'cloudinary_url') and imagem.cloudinary_url:
+                from flask import redirect
+                return redirect(imagem.cloudinary_url, 301)
         
-        # Verificar se o arquivo existe
-        file_path = os.path.join(planta_folder, filename)
-        if not os.path.exists(file_path):
-            print(f"❌ Imagem não encontrada: {file_path}")
+        # Fallback para sistema antigo (se não encontrar imagem no banco OU não tem dados Cloudinary)
+        try:
+            from flask import send_from_directory
+            planta_folder = os.path.join(UPLOAD_FOLDER, str(planta_id))
+            return send_from_directory(planta_folder, filename)
+        except:
             return jsonify({'error': 'Imagem não encontrada'}), 404
-        
-        print(f"✅ Servindo imagem: {file_path}")
-        
-        # Servir o arquivo
-        response = send_from_directory(planta_folder, filename)
-        
-        # Adicionar headers CORS para imagens
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
-        response.headers['Cache-Control'] = 'public, max-age=31536000'  # Cache por 1 ano
-        
-        return response
-        
+            
     except Exception as e:
         print(f"❌ Erro ao servir imagem {filename}: {e}")
         return jsonify({'error': 'Erro ao carregar imagem'}), 404
