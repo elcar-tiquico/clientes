@@ -48,93 +48,115 @@ class Familia(db.Model):
             'nome_familia': self.nome_familia
         }
 
-class Planta(db.Model):
-    __tablename__ = 'planta'
-    id_planta = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    id_familia = db.Column(db.Integer, db.ForeignKey('familia.id_familia'), nullable=False)
-    nome_cientifico = db.Column(db.String(150), nullable=False)
-    numero_exsicata = db.Column(db.String(50))
+def to_dict(self, include_relations=False):
+    """
+    MÉTODO CORRIGIDO - Usar nomes corretos dos campos para Railway
+    """
+    data = {
+        'id_planta': self.id_planta,
+        'nome_cientifico': self.nome_cientifico,
+        'numero_exsicata': self.numero_exsicata,
+        'id_familia': self.id_familia,
+        'familia': self.familia.nome_familia if self.familia else None,
+        'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
+    }
     
-    # Relacionamentos
-    nomes_comuns = db.relationship('NomeComum', backref='planta', lazy=True, cascade="all, delete-orphan")
-    usos_planta = db.relationship('UsoPlanta', backref='planta', lazy=True, cascade="all, delete-orphan")
-    
-    def to_dict(self, include_relations=False):
-        """
-        MÉTODO ATUALIZADO - Inclui imagens do Cloudinary
-        Mantém estrutura original + adiciona campo 'imagens' compatível com frontend
-        """
-        data = {
-            'id_planta': self.id_planta,
-            'nome_cientifico': self.nome_cientifico,
-            'numero_exsicata': self.numero_exsicata,
-            'id_familia': self.id_familia,
-            'familia': self.familia.nome_familia if self.familia else None,
-            'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
-        }
+    # ===== BUSCAR IMAGENS DO CLOUDINARY (já funciona) =====
+    try:
+        imagens = db.session.query(
+            PlantaImagem.id_imagem,
+            PlantaImagem.cloudinary_url,
+            PlantaImagem.cloudinary_public_id,
+            PlantaImagem.ordem,
+            PlantaImagem.legenda,
+            PlantaImagem.data_upload
+        ).filter(
+            PlantaImagem.id_planta == self.id_planta
+        ).order_by(PlantaImagem.ordem).all()
+
+        imagens_resultado = []
+        for img in imagens:
+            url_final = limpar_url_cloudinary(img.cloudinary_url)
+            imagens_resultado.append({
+                'id_imagem': img.id_imagem,
+                'cloudinary_url': img.cloudinary_url,
+                'cloudinary_public_id': img.cloudinary_public_id,
+                'ordem': img.ordem,
+                'legenda': img.legenda,
+                'url': url_final,
+                'data_upload': img.data_upload.isoformat() if img.data_upload else None
+            })
         
-        # ===== BUSCAR IMAGENS DO CLOUDINARY (mesma lógica da admin_dashboard_api.py) =====
+        data['imagens'] = imagens_resultado
+        print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
+        
+    except Exception as e:
+        print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
+        data['imagens'] = []
+    
+    # ===== CORREÇÃO PRINCIPAL: include_relations =====
+    if include_relations:
+        # Buscar partes usadas com indicações específicas através de UsoPlanta
+        partes_com_indicacoes = []
+        
         try:
-            imagens = db.session.query(
-                PlantaImagem.id_imagem,
-                PlantaImagem.cloudinary_url,
-                PlantaImagem.cloudinary_public_id,
-                PlantaImagem.ordem,
-                PlantaImagem.legenda,
-                PlantaImagem.data_upload
-            ).filter(
-                PlantaImagem.id_planta == self.id_planta
-            ).order_by(PlantaImagem.ordem).all()
-    
-            imagens_resultado = []
-            for img in imagens:
-                # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
-                url_final = limpar_url_cloudinary(img.cloudinary_url)
-                
-                imagens_resultado.append({
-                    'id_imagem': img.id_imagem,
-                    'cloudinary_url': img.cloudinary_url,  # URL original da BD
-                    'cloudinary_public_id': img.cloudinary_public_id,
-                    'ordem': img.ordem,
-                    'legenda': img.legenda,
-                    'url': url_final,  # URL limpa e corrigida (é o que o frontend usa)
-                    'data_upload': img.data_upload.isoformat() if img.data_upload else None
-                })
-            
-            # ADICIONAR campo 'imagens' aos dados básicos (esperado pelo frontend)
-            data['imagens'] = imagens_resultado
-            
-            print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
-            
-            # 🔧 Log detalhado para debug (igual ao admin_dashboard_api.py)
-            for img in imagens_resultado:
-                print(f"   🖼️ Imagem {img['id_imagem']}: {img['url']}")
-            
-        except Exception as e:
-            print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
-            # Em caso de erro, fornecer array vazio (frontend espera array)
-            data['imagens'] = []
-        
-        # ===== MANTER TODA A LÓGICA ORIGINAL DE include_relations =====
-        if include_relations:
-            # Buscar partes usadas com indicações específicas através de UsoPlanta
-            partes_com_indicacoes = []
             for uso in self.usos_planta:
-                parte_data = {
-                    'id_uso': uso.parte_usada.id_uso,
-                    'parte_usada': uso.parte_usada.parte_usada,
-                    'indicacoes': [{'id_indicacao': ind.id_indicacao, 'descricao': ind.descricao} 
-                                  for ind in uso.indicacoes],
-                    'metodos_preparacao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
-                                         for met in uso.metodos_preparacao],
-                    'metodos_extracao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
-                                       for met in uso.metodos_extracao]
-                }
-                partes_com_indicacoes.append(parte_data)
-            
-            data['partes_com_indicacoes'] = partes_com_indicacoes
-            
-            # MANTER outros relacionamentos se existirem
+                try:
+                    parte_data = {
+                        'id_uso': uso.parte_usada.id_uso if uso.parte_usada else None,
+                        'parte_usada': uso.parte_usada.parte_usada if uso.parte_usada else 'Não informado',
+                        'observacoes': uso.observacoes,
+                        'indicacoes': []
+                    }
+                    
+                    # ✅ CORREÇÃO: Tratar indicações de forma segura
+                    try:
+                        parte_data['indicacoes'] = [
+                            {
+                                'id_indicacao': ind.id_indicacao,
+                                'descricao': ind.descricao
+                            } for ind in uso.indicacoes
+                        ]
+                    except Exception as ind_error:
+                        print(f"⚠️ Erro ao carregar indicações: {ind_error}")
+                        parte_data['indicacoes'] = []
+                    
+                    # ✅ CORREÇÃO CRÍTICA: Usar nomes corretos dos campos
+                    try:
+                        parte_data['metodos_preparacao'] = [
+                            {
+                                'id_preparacao': met.id_preparacao,  # ✅ CORRETO (não id_metodo)
+                                'descricao': met.descricao
+                            } for met in uso.metodos_preparacao
+                        ]
+                    except Exception as prep_error:
+                        print(f"⚠️ Erro ao carregar métodos preparação: {prep_error}")
+                        parte_data['metodos_preparacao'] = []
+                    
+                    try:
+                        parte_data['metodos_extracao'] = [
+                            {
+                                'id_extraccao': met.id_extraccao,  # ✅ CORRETO (não id_metodo)
+                                'descricao': met.descricao
+                            } for met in uso.metodos_extracao
+                        ]
+                    except Exception as ext_error:
+                        print(f"⚠️ Erro ao carregar métodos extração: {ext_error}")
+                        parte_data['metodos_extracao'] = []
+                    
+                    partes_com_indicacoes.append(parte_data)
+                    
+                except Exception as uso_error:
+                    print(f"❌ Erro ao processar uso {uso.id_uso_planta}: {uso_error}")
+                    continue
+                    
+        except Exception as usos_error:
+            print(f"❌ Erro ao carregar usos da planta: {usos_error}")
+        
+        data['partes_com_indicacoes'] = partes_com_indicacoes
+        
+        # ===== OUTROS RELACIONAMENTOS (mantidos seguros) =====
+        try:
             if hasattr(self, 'autores'):
                 data['autores'] = [
                     {
@@ -143,7 +165,11 @@ class Planta(db.Model):
                         'afiliacao': autor.afiliacao
                     } for autor in self.autores
                 ]
-            
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar autores: {e}")
+            data['autores'] = []
+        
+        try:
             if hasattr(self, 'provincias'):
                 data['provincias'] = [
                     {
@@ -151,7 +177,11 @@ class Planta(db.Model):
                         'nome_provincia': prov.nome_provincia
                     } for prov in self.provincias
                 ]
-            
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar províncias: {e}")
+            data['provincias'] = []
+        
+        try:
             if hasattr(self, 'propriedades'):
                 data['propriedades'] = [
                     {
@@ -159,7 +189,11 @@ class Planta(db.Model):
                         'descricao': prop.descricao
                     } for prop in self.propriedades
                 ]
-            
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar propriedades: {e}")
+            data['propriedades'] = []
+        
+        try:
             if hasattr(self, 'compostos'):
                 data['compostos'] = [
                     {
@@ -167,19 +201,26 @@ class Planta(db.Model):
                         'nome_composto': comp.nome_composto
                     } for comp in self.compostos
                 ]
-            
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar compostos: {e}")
+            data['compostos'] = []
+        
+        try:
             if hasattr(self, 'referencias'):
                 data['referencias'] = [
                     {
                         'id_referencia': ref.id_referencia,
-                        'titulo': ref.titulo,
+                        'titulo': ref.titulo_referencia,
                         'tipo_referencia': ref.tipo_referencia,
                         'ano': ref.ano,
-                        'link': ref.link
+                        'link': ref.link_referencia
                     } for ref in self.referencias
                 ]
-        
-        return data
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar referências: {e}")
+            data['referencias'] = []
+    
+    return data
 
 class NomeComum(db.Model):
     __tablename__ = 'nome_comum'
@@ -1012,73 +1053,78 @@ def get_correlacoes_planta_indicacao():
 
 @app.route('/api/plantas/<int:id_planta>', methods=['GET'])
 def get_planta(id_planta):
-   """VERSÃO CORRIGIDA COM EAGER LOADING - Resolve o erro 500"""
-   try:
-       # ✅ SOLUÇÃO: Eager loading para carregar todos os relacionamentos numa única query
-       from sqlalchemy.orm import joinedload, selectinload
-       
-       planta = Planta.query.options(
-           # Relacionamentos many-to-many básicos
-           selectinload(Planta.autores),
-           selectinload(Planta.provincias),
-           selectinload(Planta.propriedades),
-           selectinload(Planta.compostos),
-           selectinload(Planta.referencias),
-           
-           # Relacionamentos complexos com nested loading
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao),
-           
-           # Relacionamentos diretos
-           selectinload(Planta.nomes_comuns),
-           selectinload(Planta.imagens),
-           
-           # Família (many-to-one)
-           joinedload(Planta.familia)
-       ).get_or_404(id_planta)
-       
-       # ✅ TRACKING INTELIGENTE POR CLIQUE (código original mantido)
-       try:
-           referrer = request.headers.get('Referer', '')
-           search_source = request.args.get('search_source', '')
-           search_term = request.args.get('search_term', '')
-           search_type = request.args.get('search_type', '')
-           
-           termo_pesquisa = None
-           tipo_pesquisa = 'nome_cientifico'
-           
-           if search_term and search_type:
-               termo_pesquisa = search_term.strip()
-               tipo_pesquisa = search_type
-               print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
-           else:
-               if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
-                   termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
-                   tipo_pesquisa = 'nome_popular'
-               else:
-                   termo_pesquisa = planta.nome_cientifico
-                   tipo_pesquisa = 'nome_cientifico'
-               print(f"🎯 Tracking fallback: {termo_pesquisa} ({tipo_pesquisa})")
-           
-           if termo_pesquisa:
-               registar_pesquisa_segura(
-                   termo=termo_pesquisa,
-                   tipo=tipo_pesquisa,
-                   resultados=1,
-                   request_obj=request
-               )
-               
-       except Exception as tracking_error:
-           print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
-       
-       # ✅ Agora todos os relacionamentos estão carregados, sem lazy loading
-       return jsonify(planta.to_dict(include_relations=True))
-       
-   except Exception as e:
-       print(f"❌ Erro ao carregar planta {id_planta}: {str(e)}")
-       return handle_error(e, f"Erro ao carregar detalhes da planta {id_planta}")
+    """VERSÃO CORRIGIDA COM TRATAMENTO DE ERROS ROBUSTO"""
+    try:
+        from sqlalchemy.orm import joinedload, selectinload
+        
+        # ✅ EAGER LOADING completo
+        planta = Planta.query.options(
+            # Relacionamentos many-to-many básicos
+            selectinload(Planta.autores),
+            selectinload(Planta.provincias),
+            selectinload(Planta.propriedades),
+            selectinload(Planta.compostos),
+            selectinload(Planta.referencias),
+            
+            # ✅ Relacionamentos complexos com nested loading
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao),
+            
+            # Relacionamentos diretos
+            selectinload(Planta.nomes_comuns),
+            selectinload(Planta.imagens),
+            
+            # Família (many-to-one)
+            joinedload(Planta.familia)
+        ).get_or_404(id_planta)
+        
+        # ✅ TRACKING com tipos corrigidos
+        try:
+            search_term = request.args.get('search_term', '')
+            search_type = request.args.get('search_type', '')
+            
+            termo_pesquisa = None
+            tipo_pesquisa = 'comum'  # ✅ Tipo mais curto por padrão
+            
+            if search_term and search_type:
+                termo_pesquisa = search_term.strip()
+                # ✅ Mapear para tipos mais curtos
+                if search_type == 'nome_popular':
+                    tipo_pesquisa = 'popular'
+                elif search_type == 'nome_cientifico':
+                    tipo_pesquisa = 'cientifico'
+                else:
+                    tipo_pesquisa = search_type[:10]
+                    
+                print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
+            else:
+                if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
+                    termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
+                    tipo_pesquisa = 'popular'
+                else:
+                    termo_pesquisa = planta.nome_cientifico
+                    tipo_pesquisa = 'cientifico'
+                print(f"🎯 Tracking fallback: {termo_pesquisa} ({tipo_pesquisa})")
+            
+            if termo_pesquisa:
+                registar_pesquisa_segura(
+                    termo=termo_pesquisa,
+                    tipo=tipo_pesquisa,
+                    resultados=1,
+                    request_obj=request
+                )
+                
+        except Exception as tracking_error:
+            print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
+        
+        # ✅ Retorna dados com todos os relacionamentos carregados
+        return jsonify(planta.to_dict(include_relations=True))
+        
+    except Exception as e:
+        print(f"❌ Erro ao carregar planta {id_planta}: {str(e)}")
+        return handle_error(e, f"Erro ao carregar detalhes da planta {id_planta}")
 
 @app.route('/api/plantas', methods=['POST'])
 def create_planta():
