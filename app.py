@@ -9,21 +9,13 @@ from datetime import datetime
 from datetime import datetime
 from dotenv import load_dotenv
 from werkzeug.exceptions import NotFound
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
 load_dotenv()
 
 #UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'plantas_imagens')
 UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'D:\\Elcar\\uploads\\plantas_imagens')
-cloudinary.config(
-    cloud_name="dlwth3wsa",
-    api_key="594323156311546", 
-    api_secret="PtfVAwDWYXTcMKpm2HPcgGkCJtU"
-)
+
 app = Flask(__name__)
 
-# Configuração da base de dados
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL'
 )
@@ -33,6 +25,7 @@ app.config['JSON_AS_ASCII'] = False
 # Inicializar extensões
 db = SQLAlchemy(app)
 CORS(app, origins="*")
+
 # MODELOS ATUALIZADOS PARA A NOVA ESTRUTURA
 
 class Familia(db.Model):
@@ -48,179 +41,70 @@ class Familia(db.Model):
             'nome_familia': self.nome_familia
         }
 
-def to_dict(self, include_relations=False):
-    """
-    MÉTODO CORRIGIDO - Usar nomes corretos dos campos para Railway
-    """
-    data = {
-        'id_planta': self.id_planta,
-        'nome_cientifico': self.nome_cientifico,
-        'numero_exsicata': self.numero_exsicata,
-        'id_familia': self.id_familia,
-        'familia': self.familia.nome_familia if self.familia else None,
-        'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
-    }
+class Planta(db.Model):
+    __tablename__ = 'planta'
+    id_planta = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    id_familia = db.Column(db.Integer, db.ForeignKey('familia.id_familia'), nullable=False)
+    nome_cientifico = db.Column(db.String(150), nullable=False)
+    numero_exsicata = db.Column(db.String(50))
     
-    # ===== BUSCAR IMAGENS DO CLOUDINARY (já funciona) =====
-    try:
-        imagens = db.session.query(
-            PlantaImagem.id_imagem,
-            PlantaImagem.cloudinary_url,
-            PlantaImagem.cloudinary_public_id,
-            PlantaImagem.ordem,
-            PlantaImagem.legenda,
-            PlantaImagem.data_upload
-        ).filter(
-            PlantaImagem.id_planta == self.id_planta
-        ).order_by(PlantaImagem.ordem).all()
+    # Relacionamentos
+    nomes_comuns = db.relationship('NomeComum', backref='planta', lazy=True, cascade="all, delete-orphan")
+    usos_planta = db.relationship('UsoPlanta', backref='planta', lazy=True, cascade="all, delete-orphan")
+    
+    def to_dict(self, include_relations=False):
+        data = {
+            'id_planta': self.id_planta,
+            'nome_cientifico': self.nome_cientifico,
+            'numero_exsicata': self.numero_exsicata,
+            'id_familia': self.id_familia,
+            'familia': self.familia.nome_familia if self.familia else None,
+            'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
+        }
+        
+        if include_relations:
+            # NOVA ESTRUTURA: Buscar partes usadas com indicações específicas através de Uso_Planta
+            partes_com_indicacoes = []
+            for uso in self.usos_planta:
+                parte_data = {
+                    'id_uso': uso.parte_usada.id_uso,
+                    'parte_usada': uso.parte_usada.parte_usada,
+                    'indicacoes': [{'id_indicacao': ind.id_indicacao, 'descricao': ind.descricao} 
+                                  for ind in uso.indicacoes],
+                    'metodos_preparacao': [{'id_preparacao': mp.id_preparacao, 'descricao': mp.descricao} 
+                                          for mp in uso.metodos_preparacao],
+                    'metodos_extracao': [{'id_extraccao': me.id_extraccao, 'descricao': me.descricao} 
+                                        for me in uso.metodos_extracao],
+                    'observacoes': uso.observacoes
+                }
+                partes_com_indicacoes.append(parte_data)
+            
+            referencias_com_autores = []
+            for ref in self.referencias:
+                ref_data = ref.to_dict(include_autores=True)
+                referencias_com_autores.append(ref_data)
 
-        imagens_resultado = []
-        for img in imagens:
-            url_final = limpar_url_cloudinary(img.cloudinary_url)
-            imagens_resultado.append({
-                'id_imagem': img.id_imagem,
-                'cloudinary_url': img.cloudinary_url,
-                'cloudinary_public_id': img.cloudinary_public_id,
-                'ordem': img.ordem,
-                'legenda': img.legenda,
-                'url': url_final,
-                'data_upload': img.data_upload.isoformat() if img.data_upload else None
+
+            data.update({
+                'autores': [autor.to_dict() for autor in self.autores],
+                'provincias': [provincia.to_dict() for provincia in self.provincias],
+                'partes_usadas': partes_com_indicacoes,  # ← CORRIGIDO: agora usa estrutura específica
+                'propriedades': [prop.to_dict() for prop in self.propriedades],
+                'compostos': [comp.to_dict() for comp in self.compostos],
+                'referencias': referencias_com_autores,
+                'imagens': [
+                    {
+                        'id_imagem': img.id_imagem,
+                        'nome_arquivo': img.nome_arquivo,
+                        'ordem': img.ordem,
+                        'legenda': img.legenda or '',
+                        'url': get_full_image_url(self.id_planta, img.nome_arquivo),
+                        'data_upload': img.data_upload.isoformat() if img.data_upload else None
+                    } for img in self.imagens
+                ] 
             })
         
-        data['imagens'] = imagens_resultado
-        print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
-        
-    except Exception as e:
-        print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
-        data['imagens'] = []
-    
-    # ===== CORREÇÃO PRINCIPAL: include_relations =====
-    if include_relations:
-        # Buscar partes usadas com indicações específicas através de UsoPlanta
-        partes_com_indicacoes = []
-        
-        try:
-            for uso in self.usos_planta:
-                try:
-                    parte_data = {
-                        'id_uso': uso.parte_usada.id_uso if uso.parte_usada else None,
-                        'parte_usada': uso.parte_usada.parte_usada if uso.parte_usada else 'Não informado',
-                        'observacoes': uso.observacoes,
-                        'indicacoes': []
-                    }
-                    
-                    # ✅ CORREÇÃO: Tratar indicações de forma segura
-                    try:
-                        parte_data['indicacoes'] = [
-                            {
-                                'id_indicacao': ind.id_indicacao,
-                                'descricao': ind.descricao
-                            } for ind in uso.indicacoes
-                        ]
-                    except Exception as ind_error:
-                        print(f"⚠️ Erro ao carregar indicações: {ind_error}")
-                        parte_data['indicacoes'] = []
-                    
-                    # ✅ CORREÇÃO CRÍTICA: Usar nomes corretos dos campos
-                    try:
-                        parte_data['metodos_preparacao'] = [
-                            {
-                                'id_preparacao': met.id_preparacao,  # ✅ CORRETO (não id_metodo)
-                                'descricao': met.descricao
-                            } for met in uso.metodos_preparacao
-                        ]
-                    except Exception as prep_error:
-                        print(f"⚠️ Erro ao carregar métodos preparação: {prep_error}")
-                        parte_data['metodos_preparacao'] = []
-                    
-                    try:
-                        parte_data['metodos_extracao'] = [
-                            {
-                                'id_extraccao': met.id_extraccao,  # ✅ CORRETO (não id_metodo)
-                                'descricao': met.descricao
-                            } for met in uso.metodos_extracao
-                        ]
-                    except Exception as ext_error:
-                        print(f"⚠️ Erro ao carregar métodos extração: {ext_error}")
-                        parte_data['metodos_extracao'] = []
-                    
-                    partes_com_indicacoes.append(parte_data)
-                    
-                except Exception as uso_error:
-                    print(f"❌ Erro ao processar uso {uso.id_uso_planta}: {uso_error}")
-                    continue
-                    
-        except Exception as usos_error:
-            print(f"❌ Erro ao carregar usos da planta: {usos_error}")
-        
-        data['partes_com_indicacoes'] = partes_com_indicacoes
-        
-        # ===== OUTROS RELACIONAMENTOS (mantidos seguros) =====
-        try:
-            if hasattr(self, 'autores'):
-                data['autores'] = [
-                    {
-                        'id_autor': autor.id_autor,
-                        'nome_autor': autor.nome_autor,
-                        'afiliacao': autor.afiliacao
-                    } for autor in self.autores
-                ]
-        except Exception as e:
-            print(f"⚠️ Erro ao carregar autores: {e}")
-            data['autores'] = []
-        
-        try:
-            if hasattr(self, 'provincias'):
-                data['provincias'] = [
-                    {
-                        'id_provincia': prov.id_provincia,
-                        'nome_provincia': prov.nome_provincia
-                    } for prov in self.provincias
-                ]
-        except Exception as e:
-            print(f"⚠️ Erro ao carregar províncias: {e}")
-            data['provincias'] = []
-        
-        try:
-            if hasattr(self, 'propriedades'):
-                data['propriedades'] = [
-                    {
-                        'id_propriedade': prop.id_propriedade,
-                        'descricao': prop.descricao
-                    } for prop in self.propriedades
-                ]
-        except Exception as e:
-            print(f"⚠️ Erro ao carregar propriedades: {e}")
-            data['propriedades'] = []
-        
-        try:
-            if hasattr(self, 'compostos'):
-                data['compostos'] = [
-                    {
-                        'id_composto': comp.id_composto,
-                        'nome_composto': comp.nome_composto
-                    } for comp in self.compostos
-                ]
-        except Exception as e:
-            print(f"⚠️ Erro ao carregar compostos: {e}")
-            data['compostos'] = []
-        
-        try:
-            if hasattr(self, 'referencias'):
-                data['referencias'] = [
-                    {
-                        'id_referencia': ref.id_referencia,
-                        'titulo': ref.titulo_referencia,
-                        'tipo_referencia': ref.tipo_referencia,
-                        'ano': ref.ano,
-                        'link': ref.link_referencia
-                    } for ref in self.referencias
-                ]
-        except Exception as e:
-            print(f"⚠️ Erro ao carregar referências: {e}")
-            data['referencias'] = []
-    
-    return data
+        return data
 
 class NomeComum(db.Model):
     __tablename__ = 'nome_comum'
@@ -250,35 +134,13 @@ class PlantaImagem(db.Model):
     __tablename__ = 'planta_imagem'
     id_imagem = db.Column(db.Integer, primary_key=True, autoincrement=True)
     id_planta = db.Column(db.Integer, db.ForeignKey('planta.id_planta'), nullable=False)
-    # ❌ REMOVER: nome_arquivo = db.Column(db.String(255))  # Esta linha causa o erro
-    cloudinary_url = db.Column(db.String(500), nullable=True)  # ✅ ESSENCIAL
-    cloudinary_public_id = db.Column(db.String(255), nullable=True)  # ✅ ESSENCIAL  
+    nome_arquivo = db.Column(db.String(255), nullable=False)
     ordem = db.Column(db.Integer, default=1)
-    legenda = db.Column(db.String(255))
-    data_upload = db.Column(db.DateTime, default=datetime.utcnow)  # ✅ ESSENCIAL
+    legenda = db.Column(db.Text)
+    data_upload = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relacionamento com a planta
     planta = db.relationship('Planta', backref=db.backref('imagens', lazy=True))
-    
-    # ✅ PROPRIEDADE PARA COMPATIBILIDADE (se necessário)
-    @property
-    def nome_arquivo(self):
-        """Propriedade para compatibilidade com código antigo"""
-        if self.cloudinary_public_id:
-            return f"{self.cloudinary_public_id}.jpg"  # Formato padrão
-        return "sem_imagem.jpg"
-    
-    def to_dict(self):
-        return {
-            'id_imagem': self.id_imagem,
-            'id_planta': self.id_planta,
-            'cloudinary_url': self.cloudinary_url,
-            'cloudinary_public_id': self.cloudinary_public_id,
-            'ordem': self.ordem,
-            'legenda': self.legenda,
-            'url': limpar_url_cloudinary(self.cloudinary_url),
-            'data_upload': self.data_upload.isoformat() if self.data_upload else None
-        }
 
 class Referencia(db.Model):
     __tablename__ = 'referencia'
@@ -289,62 +151,38 @@ class Referencia(db.Model):
     ano = db.Column(db.String(4), nullable=True)
     
     def to_dict(self, include_autores=False):
-        """
-        MÉTODO ATUALIZADO - Usa query direta para evitar problemas com lazy loading
-        """
         data = {
-            'id_planta': self.id_planta,
-            'nome_cientifico': self.nome_cientifico,
-            'numero_exsicata': self.numero_exsicata,
-            'id_familia': self.id_familia,
-            'familia': self.familia.nome_familia if self.familia else None,
-            'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
+            'id_referencia': self.id_referencia,
+            'link_referencia': self.link_referencia,
+            'tipo_referencia': self.tipo_referencia,
+            'titulo_referencia': self.titulo_referencia,
+            'ano': self.ano
         }
         
-        # ===== BUSCAR IMAGENS DO CLOUDINARY (QUERY DIRETA SEM nome_arquivo) =====
-        try:
-            # ✅ CORREÇÃO: Query direta sem usar relacionamento que pode ter lazy loading
-            imagens = db.session.query(
-                PlantaImagem.id_imagem,
-                PlantaImagem.cloudinary_url,
-                PlantaImagem.cloudinary_public_id,
-                PlantaImagem.ordem,
-                PlantaImagem.legenda,
-                PlantaImagem.data_upload
+        if include_autores:
+            # Buscar autores desta referência ordenados
+            autores_ref = db.session.query(
+                Autor.id_autor,
+                Autor.nome_autor,
+                Autor.afiliacao,
+                Autor.sigla_afiliacao,
+                AutorReferencia.ordem_autor,
+                AutorReferencia.papel
+            ).join(
+                AutorReferencia, Autor.id_autor == AutorReferencia.id_autor
             ).filter(
-                PlantaImagem.id_planta == self.id_planta
-            ).order_by(PlantaImagem.ordem).all()
-    
-            imagens_resultado = []
-            for img in imagens:
-                # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
-                url_final = limpar_url_cloudinary(img.cloudinary_url)
-                
-                imagens_resultado.append({
-                    'id_imagem': img.id_imagem,
-                    'cloudinary_url': img.cloudinary_url,  # URL original da BD
-                    'cloudinary_public_id': img.cloudinary_public_id,
-                    'ordem': img.ordem,
-                    'legenda': img.legenda,
-                    'url': url_final,  # URL limpa e corrigida (é o que o frontend usa)
-                    'data_upload': img.data_upload.isoformat() if img.data_upload else None
-                })
+                AutorReferencia.id_referencia == self.id_referencia
+            ).order_by(AutorReferencia.ordem_autor).all()
             
-            # ADICIONAR campo 'imagens' aos dados básicos (esperado pelo frontend)
-            data['imagens'] = imagens_resultado
-            
-            print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
-            
-        except Exception as e:
-            print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
-            # Em caso de erro, fornecer array vazio (frontend espera array)
-            data['imagens'] = []
+            data['autores'] = [{
+                'id_autor': ar.id_autor,
+                'nome_autor': ar.nome_autor,
+                'afiliacao': ar.afiliacao,
+                'sigla_afiliacao': ar.sigla_afiliacao,
+                'ordem_autor': ar.ordem_autor,
+                'papel': ar.papel
+            } for ar in autores_ref]
         
-        # ===== RESTO DO MÉTODO PERMANECE IGUAL =====
-        if include_relations:
-            # ... resto do código para relacionamentos ...
-            pass
-            
         return data
 
 class PlantaReferencia(db.Model):
@@ -547,26 +385,6 @@ def handle_error(e, message="Erro interno do servidor"):
     print(f"Erro: {str(e)}")
     return jsonify({'error': message, 'details': str(e)}), 500
 
-def limpar_url_cloudinary(url):
-    """
-    🔧 FUNÇÃO CORRIGIDA - Evitar concatenação incorreta de URLs
-    """
-    if not url:
-        return "/static/images/sem_imagem.jpg"
-    
-    # Remover duplicações de prefixo
-    if url.count('https://res.cloudinary.com/') > 1:
-        parts = url.split('https://res.cloudinary.com/')
-        if len(parts) > 2:
-            url = 'https://res.cloudinary.com/' + parts[-1]
-    
-    # Validar se é uma URL válida do Cloudinary
-    if 'res.cloudinary.com' in url and url.startswith('https://'):
-        return url
-    
-    # Fallback para imagem padrão
-    return "/static/images/sem_imagem.jpg"
-
 def registar_pesquisa_segura(termo, tipo='nome_comum', resultados=0, request_obj=None):
     """
     Função SEGURA para registar pesquisas - com try/catch completo
@@ -608,57 +426,6 @@ def registar_pesquisa_segura(termo, tipo='nome_comum', resultados=0, request_obj
             pass
         print(f"⚠️ Erro ao registar pesquisa (não afeta funcionamento): {e}")
         return False
-
-def get_cloudinary_image_url(public_id, transformation=None):
-    """
-    Gerar URL otimizada de uma imagem do Cloudinary
-    """
-    try:
-        if not public_id:
-            return "/static/images/sem_imagem.jpg"
-        
-        if transformation is None:
-            transformation = [
-                {'width': 800, 'height': 800, 'crop': 'limit'},
-                {'quality': 'auto:good'},
-                {'format': 'auto'}
-            ]
-        
-        url = cloudinary.utils.cloudinary_url(
-            public_id,
-            transformation=transformation
-        )[0]
-        
-        return url
-        
-    except Exception as e:
-        print(f"❌ Erro ao gerar URL do Cloudinary: {e}")
-        return "/static/images/sem_imagem.jpg"
-
-def get_cloudinary_thumbnail_url(public_id, width=300, height=300):
-    """
-    Gerar URL de thumbnail de uma imagem do Cloudinary
-    """
-    try:
-        if not public_id:
-            return "/static/images/sem_imagem.jpg"
-        
-        transformation = [
-            {'width': width, 'height': height, 'crop': 'fill'},
-            {'quality': 'auto:good'},
-            {'format': 'auto'}
-        ]
-        
-        url = cloudinary.utils.cloudinary_url(
-            public_id,
-            transformation=transformation
-        )[0]
-        
-        return url
-        
-    except Exception as e:
-        print(f"❌ Erro ao gerar thumbnail do Cloudinary: {e}")
-        return "/static/images/sem_imagem.jpg"
 
 # ROTAS - FAMÍLIAS
 @app.route('/api/familias', methods=['GET'])
@@ -1053,78 +820,61 @@ def get_correlacoes_planta_indicacao():
 
 @app.route('/api/plantas/<int:id_planta>', methods=['GET'])
 def get_planta(id_planta):
-    """VERSÃO CORRIGIDA COM TRATAMENTO DE ERROS ROBUSTO"""
+    """VERSÃO COM TRACKING POR CLIQUE - Mede interesse real"""
     try:
-        from sqlalchemy.orm import joinedload, selectinload
+        # Lógica original mantida
+        planta = Planta.query.get_or_404(id_planta)
         
-        # ✅ EAGER LOADING completo
-        planta = Planta.query.options(
-            # Relacionamentos many-to-many básicos
-            selectinload(Planta.autores),
-            selectinload(Planta.provincias),
-            selectinload(Planta.propriedades),
-            selectinload(Planta.compostos),
-            selectinload(Planta.referencias),
-            
-            # ✅ Relacionamentos complexos com nested loading
-            selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
-            selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
-            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
-            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao),
-            
-            # Relacionamentos diretos
-            selectinload(Planta.nomes_comuns),
-            selectinload(Planta.imagens),
-            
-            # Família (many-to-one)
-            joinedload(Planta.familia)
-        ).get_or_404(id_planta)
-        
-        # ✅ TRACKING com tipos corrigidos
+        # ✅ TRACKING INTELIGENTE POR CLIQUE
         try:
-            search_term = request.args.get('search_term', '')
-            search_type = request.args.get('search_type', '')
+            # Analisar os parâmetros de query para entender como chegou aqui
+            referrer = request.headers.get('Referer', '')
+            search_source = request.args.get('search_source', '')  # Parâmetro opcional do frontend
+            search_term = request.args.get('search_term', '')      # Parâmetro opcional do frontend
+            search_type = request.args.get('search_type', '')      # Parâmetro opcional do frontend
             
+            # Determinar termo e tipo da pesquisa original
             termo_pesquisa = None
-            tipo_pesquisa = 'comum'  # ✅ Tipo mais curto por padrão
+            tipo_pesquisa = 'nome_cientifico'  # Padrão: assume interesse no nome científico
             
+            # ===== LÓGICA INTELIGENTE DE DETECÇÃO =====
+            
+            # OPÇÃO 1: Frontend passa parâmetros (recomendado)
             if search_term and search_type:
                 termo_pesquisa = search_term.strip()
-                # ✅ Mapear para tipos mais curtos
-                if search_type == 'nome_popular':
-                    tipo_pesquisa = 'popular'
-                elif search_type == 'nome_cientifico':
-                    tipo_pesquisa = 'cientifico'
-                else:
-                    tipo_pesquisa = search_type[:10]
-                    
+                tipo_pesquisa = search_type
                 print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
+            
+            # OPÇÃO 2: Usar nome da planta (fallback)
             else:
+                # Prioridade: nome comum se existir, senão científico
                 if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
                     termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
-                    tipo_pesquisa = 'popular'
+                    tipo_pesquisa = 'nome_popular'
                 else:
                     termo_pesquisa = planta.nome_cientifico
-                    tipo_pesquisa = 'cientifico'
-                print(f"🎯 Tracking fallback: {termo_pesquisa} ({tipo_pesquisa})")
+                    tipo_pesquisa = 'nome_cientifico'
+                print(f"🎯 Tracking via nome da planta: {termo_pesquisa} ({tipo_pesquisa})")
             
+            # ===== REGISTAR CLIQUE COMO INTERESSE REAL =====
             if termo_pesquisa:
                 registar_pesquisa_segura(
                     termo=termo_pesquisa,
                     tipo=tipo_pesquisa,
-                    resultados=1,
+                    resultados=1,  # Sempre 1 porque clicou numa planta específica
                     request_obj=request
                 )
                 
         except Exception as tracking_error:
+            # Se o tracking falhar, apenas log - NÃO afetar a resposta
             print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
         
-        # ✅ Retorna dados com todos os relacionamentos carregados
+        # Resposta original mantida
         return jsonify(planta.to_dict(include_relations=True))
         
     except Exception as e:
-        print(f"❌ Erro ao carregar planta {id_planta}: {str(e)}")
-        return handle_error(e, f"Erro ao carregar detalhes da planta {id_planta}")
+        # Tratamento de erro original mantido
+        return handle_error(e)
 
 @app.route('/api/plantas', methods=['POST'])
 def create_planta():
@@ -2453,49 +2203,48 @@ def get_full_image_url(planta_id, filename, request_obj=None):
     except Exception as e:
         # Fallback para desenvolvimento
         print(f"⚠️ Erro ao gerar URL da imagem: {e}")
-        return f"https://clientes-clientes.up.railway.app/uploads/plantas_imagens/{planta_id}/{filename}"
+        return f"http://localhost:5000/uploads/plantas_imagens/{planta_id}/{filename}"
 
 
 @app.route('/api/plantas/<int:planta_id>/imagens', methods=['GET'])
 def get_imagens_planta_frontend(planta_id):
     """
-    🔧 VERSÃO CORRIGIDA - Query direta sem nome_arquivo
+    Buscar imagens de uma planta para o frontend
+    Endpoint principal para carregar imagens nas páginas
     """
     try:
+        print(f"📸 Buscando imagens para planta {planta_id} (frontend)")
+        
+        # Verificar se a planta existe
         planta = Planta.query.get(planta_id)
         if not planta:
             return jsonify({'error': 'Planta não encontrada'}), 404
         
-        # ✅ QUERY DIRETA SEM nome_arquivo
-        imagens = db.session.query(
-            PlantaImagem.id_imagem,
-            PlantaImagem.cloudinary_url,
-            PlantaImagem.cloudinary_public_id,
-            PlantaImagem.ordem,
-            PlantaImagem.legenda,
-            PlantaImagem.data_upload
-        ).filter(
-            PlantaImagem.id_planta == planta_id
-        ).order_by(PlantaImagem.ordem).all()
+        # Buscar imagens da planta
+        imagens = PlantaImagem.query.filter_by(id_planta=planta_id).order_by(PlantaImagem.ordem).all()
         
         resultado = []
         for img in imagens:
-            # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
-            url_final = limpar_url_cloudinary(img.cloudinary_url)
+            # Gerar URL completa para cada imagem
+            image_url = get_full_image_url(planta_id, img.nome_arquivo)
             
             resultado.append({
                 'id_imagem': img.id_imagem,
-                'cloudinary_url': img.cloudinary_url,  # URL original da BD
-                'cloudinary_public_id': img.cloudinary_public_id,
+                'nome_arquivo': img.nome_arquivo,
                 'ordem': img.ordem,
-                'legenda': img.legenda,
-                'url': url_final,  # URL limpa e corrigida
+                'legenda': img.legenda or '',
+                'url': image_url,
                 'data_upload': img.data_upload.isoformat() if img.data_upload else None
             })
         
         print(f"✅ Retornando {len(resultado)} imagens para planta {planta_id}")
         
-        return jsonify({'imagens': resultado, 'total': len(resultado)})
+        return jsonify({
+            'imagens': resultado, 
+            'total': len(resultado),
+            'planta_id': planta_id,
+            'planta_nome': planta.nome_cientifico
+        })
         
     except Exception as e:
         print(f"❌ Erro ao carregar imagens da planta {planta_id}: {e}")
@@ -2504,13 +2253,40 @@ def get_imagens_planta_frontend(planta_id):
 # Also need to ensure CORS headers for image serving endpoint:
 @app.route('/uploads/plantas_imagens/<int:planta_id>/<filename>')
 def serve_plant_image(planta_id, filename):
-    """Servir imagens locais - fallback para compatibilidade"""
+    """
+    Servir imagens das plantas com headers CORS corretos
+    """
     try:
+        # Verificar se a pasta da planta existe
         planta_folder = os.path.join(UPLOAD_FOLDER, str(planta_id))
-        return send_from_directory(planta_folder, filename)
+        
+        if not os.path.exists(planta_folder):
+            print(f"❌ Pasta da planta {planta_id} não encontrada: {planta_folder}")
+            return jsonify({'error': 'Pasta da planta não encontrada'}), 404
+        
+        # Verificar se o arquivo existe
+        file_path = os.path.join(planta_folder, filename)
+        if not os.path.exists(file_path):
+            print(f"❌ Imagem não encontrada: {file_path}")
+            return jsonify({'error': 'Imagem não encontrada'}), 404
+        
+        print(f"✅ Servindo imagem: {file_path}")
+        
+        # Servir o arquivo
+        response = send_from_directory(planta_folder, filename)
+        
+        # Adicionar headers CORS para imagens
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+        response.headers['Cache-Control'] = 'public, max-age=31536000'  # Cache por 1 ano
+        
+        return response
+        
     except Exception as e:
-        # Retornar erro 404 se imagem local não encontrada
-        return jsonify({'error': 'Imagem não encontrada'}), 404
+        print(f"❌ Erro ao servir imagem {filename}: {e}")
+        return jsonify({'error': 'Erro ao carregar imagem'}), 404
 
 def get_planta_images_info(planta_id):
     """
@@ -2903,7 +2679,6 @@ def internal_error(error):
     return jsonify({'error': 'Erro interno do servidor'}), 500
 
 if __name__ == '__main__':
-    #with app.app_context():
-        #db.create_all()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True, host='0.0.0.0', port=5000)
