@@ -62,7 +62,9 @@ class Planta(db.Model):
     
     def to_dict(self, include_relations=False):
         """
-        MÉTODO ATUALIZADO - Usa query direta para evitar problemas com lazy loading
+        MÉTODO CORRIGIDO E OTIMIZADO PARA PRODUÇÃO
+        - Usa os nomes de ID corretos ('id_preparacao', 'id_extraccao').
+        - Lida com a serialização de imagens do Cloudinary.
         """
         data = {
             'id_planta': self.id_planta,
@@ -73,48 +75,27 @@ class Planta(db.Model):
             'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
         }
         
-        # ===== BUSCAR IMAGENS DO CLOUDINARY (QUERY DIRETA SEM nome_arquivo) =====
+        # Lógica de imagens para Cloudinary
         try:
-            # ✅ CORREÇÃO: Query direta sem usar relacionamento que pode ter lazy loading
-            imagens = db.session.query(
-                PlantaImagem.id_imagem,
-                PlantaImagem.cloudinary_url,
-                PlantaImagem.cloudinary_public_id,
-                PlantaImagem.ordem,
-                PlantaImagem.legenda,
-                PlantaImagem.data_upload
-            ).filter(
-                PlantaImagem.id_planta == self.id_planta
-            ).order_by(PlantaImagem.ordem).all()
-    
             imagens_resultado = []
-            for img in imagens:
-                # 🔧 CORREÇÃO: Função dedicada para limpar e validar URLs
-                url_final = limpar_url_cloudinary(img.cloudinary_url)
-                
+            for img in self.imagens:
+                url_final = limpar_url_cloudinary(img.cloudinary_url) # Supondo que você tenha a função limpar_url_cloudinary
                 imagens_resultado.append({
                     'id_imagem': img.id_imagem,
-                    'cloudinary_url': img.cloudinary_url,  # URL original da BD
+                    'cloudinary_url': img.cloudinary_url,
                     'cloudinary_public_id': img.cloudinary_public_id,
                     'ordem': img.ordem,
                     'legenda': img.legenda,
-                    'url': url_final,  # URL limpa e corrigida (é o que o frontend usa)
+                    'url': url_final,
                     'data_upload': img.data_upload.isoformat() if img.data_upload else None
                 })
-            
-            # ADICIONAR campo 'imagens' aos dados básicos (esperado pelo frontend)
             data['imagens'] = imagens_resultado
-            
-            print(f"✅ Retornando {len(imagens_resultado)} imagens para planta {self.id_planta}")
-            
         except Exception as e:
             print(f"❌ Erro ao carregar imagens da planta {self.id_planta}: {e}")
-            # Em caso de erro, fornecer array vazio (frontend espera array)
             data['imagens'] = []
-        
-        # ===== MANTER TODA A LÓGICA ORIGINAL DE include_relations =====
+
         if include_relations:
-            # Buscar partes usadas com indicações específicas através de UsoPlanta
+            # Estrutura de usos com os nomes de ID CORRIGIDOS
             partes_com_indicacoes = []
             for uso in self.usos_planta:
                 parte_data = {
@@ -122,61 +103,31 @@ class Planta(db.Model):
                     'parte_usada': uso.parte_usada.parte_usada,
                     'indicacoes': [{'id_indicacao': ind.id_indicacao, 'descricao': ind.descricao} 
                                   for ind in uso.indicacoes],
-                    'metodos_preparacao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
+                    # ✅ CORREÇÃO 1: Usar id_preparacao e met.descricao
+                    'metodos_preparacao': [{'id_metodo': met.id_preparacao, 'metodo': met.descricao} 
                                          for met in uso.metodos_preparacao],
-                    'metodos_extracao': [{'id_metodo': met.id_metodo, 'metodo': met.metodo} 
+                    # ✅ CORREÇÃO 1: Usar id_extraccao e met.descricao
+                    'metodos_extracao': [{'id_metodo': met.id_extraccao, 'metodo': met.descricao} 
                                        for met in uso.metodos_extracao]
                 }
                 partes_com_indicacoes.append(parte_data)
             
             data['partes_com_indicacoes'] = partes_com_indicacoes
             
-            # MANTER outros relacionamentos se existirem
+            # Outros relacionamentos
             if hasattr(self, 'autores'):
-                data['autores'] = [
-                    {
-                        'id_autor': autor.id_autor,
-                        'nome_autor': autor.nome_autor,
-                        'afiliacao': autor.afiliacao
-                    } for autor in self.autores
-                ]
-            
+                data['autores'] = [{'id_autor': autor.id_autor, 'nome_autor': autor.nome_autor, 'afiliacao': autor.afiliacao} for autor in self.autores]
             if hasattr(self, 'provincias'):
-                data['provincias'] = [
-                    {
-                        'id_provincia': prov.id_provincia,
-                        'nome_provincia': prov.nome_provincia
-                    } for prov in self.provincias
-                ]
-            
+                data['provincias'] = [{'id_provincia': prov.id_provincia, 'nome_provincia': prov.nome_provincia} for prov in self.provincias]
             if hasattr(self, 'propriedades'):
-                data['propriedades'] = [
-                    {
-                        'id_propriedade': prop.id_propriedade,
-                        'descricao': prop.descricao
-                    } for prop in self.propriedades
-                ]
-            
+                data['propriedades'] = [{'id_propriedade': prop.id_propriedade, 'descricao': prop.descricao} for prop in self.propriedades]
             if hasattr(self, 'compostos'):
-                data['compostos'] = [
-                    {
-                        'id_composto': comp.id_composto,
-                        'nome_composto': comp.nome_composto
-                    } for comp in self.compostos
-                ]
-            
+                data['compostos'] = [{'id_composto': comp.id_composto, 'nome_composto': comp.nome_composto} for comp in self.compostos]
             if hasattr(self, 'referencias'):
-                data['referencias'] = [
-                    {
-                        'id_referencia': ref.id_referencia,
-                        'titulo': ref.titulo,
-                        'tipo_referencia': ref.tipo_referencia,
-                        'ano': ref.ano,
-                        'link': ref.link
-                    } for ref in self.referencias
-                ]
+                data['referencias'] = [ref.to_dict(include_autores=True) for ref in self.referencias]
         
         return data
+
 
 class NomeComum(db.Model):
     __tablename__ = 'nome_comum'
@@ -985,19 +936,14 @@ def get_correlacoes_planta_indicacao():
 @app.route('/api/plantas/<int:id_planta>', methods=['GET'])
 def get_planta(id_planta):
     """
-    VERSÃO FINAL CORRIGIDA COM EAGER LOADING EXPLÍCITO.
-    Garante que todos os dados relacionados sejam carregados de forma eficiente
-    antes da serialização para JSON, evitando falhas de lazy loading.
+    VERSÃO FINAL CORRIGIDA PARA PRODUÇÃO (RAILWAY)
+    - Usa Eager Loading para evitar falhas de lazy loading.
+    - Corrige o valor do Enum para o tracking de pesquisas.
     """
     try:
-        # Eager Loading para carregar todos os relacionamentos de uma vez.
-        # Isto é crucial para evitar erros em ambientes de produção.
+        # Eager Loading para carregar todos os dados de uma vez
         planta = Planta.query.options(
-            # Usa joinedload para relacionamentos one-to-one/many-to-one (melhor para joins simples)
             joinedload(Planta.familia),
-            
-            # Usa selectinload para relacionamentos one-to-many/many-to-many 
-            # (mais eficiente, pois faz uma segunda query para buscar todos os itens relacionados)
             selectinload(Planta.nomes_comuns),
             selectinload(Planta.imagens),
             selectinload(Planta.autores),
@@ -1005,62 +951,51 @@ def get_planta(id_planta):
             selectinload(Planta.propriedades),
             selectinload(Planta.compostos),
             selectinload(Planta.referencias),
-            
-            # Carregamento aninhado (nested loading) para a estrutura complexa de "usos".
-            # Carrega 'usos_planta' e, para cada uso, carrega suas relações.
             selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
             selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
             selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
             selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao)
-        ).get(id_planta) # Usar .get() é mais direto para buscar por chave primária
+        ).get(id_planta)
 
-        # Se a planta não for encontrada, o get_or_404 lidaria com isso, 
-        # mas com .get() precisamos verificar manualmente.
         if not planta:
-            # Lança uma exceção que o errorhandler @app.errorhandler(404) irá capturar
             raise NotFound(f"Planta com ID {id_planta} não encontrada.")
 
-        # O seu código de tracking pode ser mantido aqui, pois a planta já está carregada.
+        # Bloco de tracking com o tipo de pesquisa CORRIGIDO
         try:
             search_term = request.args.get('search_term', '').strip()
-            search_type = request.args.get('search_type', 'nome_popular')
+            search_type_raw = request.args.get('search_type', '')
             
-            # Determina o termo de pesquisa a ser logado
             if search_term:
                 termo_pesquisa = search_term
-                tipo_pesquisa = search_type
+                # ✅ CORREÇÃO 3: Garantir que o tipo é válido para o Enum
+                tipo_pesquisa = 'nome_comum' if search_type_raw == 'nome_popular' else search_type_raw
             else:
-                # Fallback se não vierem parâmetros de busca
                 if planta.nomes_comuns:
                     termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
-                    tipo_pesquisa = 'nome_popular'
+                    tipo_pesquisa = 'nome_comum' # ✅ CORREÇÃO 3: Usar 'nome_comum'
                 else:
                     termo_pesquisa = planta.nome_cientifico
-                    tipo_pesquisa = 'nome_cientifico'
+                    tipo_pesquisa = 'cientifico'
             
-            # Regista o clique do utilizador
-            if termo_pesquisa:
+            if termo_pesquisa and tipo_pesquisa in ['nome_comum', 'cientifico', 'familia', 'indicacao']:
                 registar_pesquisa_segura(
                     termo=termo_pesquisa,
                     tipo=tipo_pesquisa,
-                    resultados=1, # Um clique representa um resultado encontrado
+                    resultados=1,
                     request_obj=request
                 )
         except Exception as tracking_error:
             print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
         
-        # Agora, com todos os dados pré-carregados, a serialização é segura.
-        # O método to_dict() não precisará fazer novas queries à base de dados.
+        # Com todos os dados pré-carregados, a serialização é segura
         return jsonify(planta.to_dict(include_relations=True))
         
     except NotFound as e:
-        # Captura o erro 404 específico para recurso não encontrado
         return jsonify({'error': str(e)}), 404
     except Exception as e:
-        # Captura qualquer outro erro inesperado
         print(f"❌ Erro crítico ao carregar detalhes da planta {id_planta}: {str(e)}")
         import traceback
-        traceback.print_exc() # Imprime o stack trace completo no log do servidor para debug
+        traceback.print_exc()
         return handle_error(e, f"Ocorreu um erro inesperado ao carregar os detalhes da planta {id_planta}.")
 
 
@@ -2150,7 +2085,7 @@ def get_plantas_com_referencias_atualizada():
             ).filter(
                 PlantaReferencia.id_planta == planta_row.id_planta
             ).order_by(
-                Referencia.ano.desc().nullslast(),
+                db.desc(Referencia.ano),
                 Referencia.titulo_referencia.asc()
             ).all()
             
