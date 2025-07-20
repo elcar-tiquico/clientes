@@ -4,6 +4,7 @@ from flask_cors import CORS
 from flask import send_from_directory
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload, selectinload
 import os
 from datetime import datetime
 from datetime import datetime
@@ -983,73 +984,85 @@ def get_correlacoes_planta_indicacao():
 
 @app.route('/api/plantas/<int:id_planta>', methods=['GET'])
 def get_planta(id_planta):
-   """VERSÃO CORRIGIDA COM EAGER LOADING - Resolve o erro 500"""
-   try:
-       # ✅ SOLUÇÃO: Eager loading para carregar todos os relacionamentos numa única query
-       from sqlalchemy.orm import joinedload, selectinload
-       
-       planta = Planta.query.options(
-           # Relacionamentos many-to-many básicos
-           selectinload(Planta.autores),
-           selectinload(Planta.provincias),
-           selectinload(Planta.propriedades),
-           selectinload(Planta.compostos),
-           selectinload(Planta.referencias),
-           
-           # Relacionamentos complexos com nested loading
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
-           selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao),
-           
-           # Relacionamentos diretos
-           selectinload(Planta.nomes_comuns),
-           selectinload(Planta.imagens),
-           
-           # Família (many-to-one)
-           joinedload(Planta.familia)
-       ).get_or_404(id_planta)
-       
-       # ✅ TRACKING INTELIGENTE POR CLIQUE (código original mantido)
-       try:
-           referrer = request.headers.get('Referer', '')
-           search_source = request.args.get('search_source', '')
-           search_term = request.args.get('search_term', '')
-           search_type = request.args.get('search_type', '')
-           
-           termo_pesquisa = None
-           tipo_pesquisa = 'nome_cientifico'
-           
-           if search_term and search_type:
-               termo_pesquisa = search_term.strip()
-               tipo_pesquisa = search_type
-               print(f"🎯 Tracking via parâmetros: {termo_pesquisa} ({tipo_pesquisa})")
-           else:
-               if planta.nomes_comuns and len(planta.nomes_comuns) > 0:
-                   termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
-                   tipo_pesquisa = 'nome_popular'
-               else:
-                   termo_pesquisa = planta.nome_cientifico
-                   tipo_pesquisa = 'nome_cientifico'
-               print(f"🎯 Tracking fallback: {termo_pesquisa} ({tipo_pesquisa})")
-           
-           if termo_pesquisa:
-               registar_pesquisa_segura(
-                   termo=termo_pesquisa,
-                   tipo=tipo_pesquisa,
-                   resultados=1,
-                   request_obj=request
-               )
-               
-       except Exception as tracking_error:
-           print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
-       
-       # ✅ Agora todos os relacionamentos estão carregados, sem lazy loading
-       return jsonify(planta.to_dict(include_relations=True))
-       
-   except Exception as e:
-       print(f"❌ Erro ao carregar planta {id_planta}: {str(e)}")
-       return handle_error(e, f"Erro ao carregar detalhes da planta {id_planta}")
+    """
+    VERSÃO FINAL CORRIGIDA COM EAGER LOADING EXPLÍCITO.
+    Garante que todos os dados relacionados sejam carregados de forma eficiente
+    antes da serialização para JSON, evitando falhas de lazy loading.
+    """
+    try:
+        # Eager Loading para carregar todos os relacionamentos de uma vez.
+        # Isto é crucial para evitar erros em ambientes de produção.
+        planta = Planta.query.options(
+            # Usa joinedload para relacionamentos one-to-one/many-to-one (melhor para joins simples)
+            joinedload(Planta.familia),
+            
+            # Usa selectinload para relacionamentos one-to-many/many-to-many 
+            # (mais eficiente, pois faz uma segunda query para buscar todos os itens relacionados)
+            selectinload(Planta.nomes_comuns),
+            selectinload(Planta.imagens),
+            selectinload(Planta.autores),
+            selectinload(Planta.provincias),
+            selectinload(Planta.propriedades),
+            selectinload(Planta.compostos),
+            selectinload(Planta.referencias),
+            
+            # Carregamento aninhado (nested loading) para a estrutura complexa de "usos".
+            # Carrega 'usos_planta' e, para cada uso, carrega suas relações.
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.parte_usada),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.indicacoes),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_preparacao),
+            selectinload(Planta.usos_planta).selectinload(UsoPlanta.metodos_extracao)
+        ).get(id_planta) # Usar .get() é mais direto para buscar por chave primária
+
+        # Se a planta não for encontrada, o get_or_404 lidaria com isso, 
+        # mas com .get() precisamos verificar manualmente.
+        if not planta:
+            # Lança uma exceção que o errorhandler @app.errorhandler(404) irá capturar
+            raise NotFound(f"Planta com ID {id_planta} não encontrada.")
+
+        # O seu código de tracking pode ser mantido aqui, pois a planta já está carregada.
+        try:
+            search_term = request.args.get('search_term', '').strip()
+            search_type = request.args.get('search_type', 'nome_popular')
+            
+            # Determina o termo de pesquisa a ser logado
+            if search_term:
+                termo_pesquisa = search_term
+                tipo_pesquisa = search_type
+            else:
+                # Fallback se não vierem parâmetros de busca
+                if planta.nomes_comuns:
+                    termo_pesquisa = planta.nomes_comuns[0].nome_comum_planta
+                    tipo_pesquisa = 'nome_popular'
+                else:
+                    termo_pesquisa = planta.nome_cientifico
+                    tipo_pesquisa = 'nome_cientifico'
+            
+            # Regista o clique do utilizador
+            if termo_pesquisa:
+                registar_pesquisa_segura(
+                    termo=termo_pesquisa,
+                    tipo=tipo_pesquisa,
+                    resultados=1, # Um clique representa um resultado encontrado
+                    request_obj=request
+                )
+        except Exception as tracking_error:
+            print(f"⚠️ Erro no tracking de clique (ignorado): {tracking_error}")
+        
+        # Agora, com todos os dados pré-carregados, a serialização é segura.
+        # O método to_dict() não precisará fazer novas queries à base de dados.
+        return jsonify(planta.to_dict(include_relations=True))
+        
+    except NotFound as e:
+        # Captura o erro 404 específico para recurso não encontrado
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        # Captura qualquer outro erro inesperado
+        print(f"❌ Erro crítico ao carregar detalhes da planta {id_planta}: {str(e)}")
+        import traceback
+        traceback.print_exc() # Imprime o stack trace completo no log do servidor para debug
+        return handle_error(e, f"Ocorreu um erro inesperado ao carregar os detalhes da planta {id_planta}.")
+
 
 @app.route('/api/plantas', methods=['POST'])
 def create_planta():
