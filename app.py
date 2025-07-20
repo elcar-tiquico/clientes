@@ -49,6 +49,10 @@ class Familia(db.Model):
             'nome_familia': self.nome_familia
         }
 
+# ======================================================================
+# SUBSTITUA A SUA CLASSE 'Planta' INTEIRA POR ESTA VERSÃO FINAL
+# ======================================================================
+
 class Planta(db.Model):
     __tablename__ = 'planta'
     id_planta = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -56,16 +60,18 @@ class Planta(db.Model):
     nome_cientifico = db.Column(db.String(150), nullable=False)
     numero_exsicata = db.Column(db.String(50))
     
-    # Relacionamentos
+    # Relacionamentos (mantêm-se iguais)
     nomes_comuns = db.relationship('NomeComum', backref='planta', lazy=True, cascade="all, delete-orphan")
     usos_planta = db.relationship('UsoPlanta', backref='planta', lazy=True, cascade="all, delete-orphan")
     
     def to_dict(self, include_relations=False):
         """
-        MÉTODO CORRIGIDO E OTIMIZADO PARA PRODUÇÃO
+        VERSÃO FINAL E COMPLETA
+        - Garante que a estrutura da resposta JSON é IDÊNTICA à da versão local.
         - Usa os nomes de ID corretos ('id_preparacao', 'id_extraccao').
         - Lida com a serialização de imagens do Cloudinary.
         """
+        # Dados básicos da planta
         data = {
             'id_planta': self.id_planta,
             'nome_cientifico': self.nome_cientifico,
@@ -75,11 +81,12 @@ class Planta(db.Model):
             'nomes_comuns': [nc.nome_comum_planta for nc in self.nomes_comuns]
         }
         
-        # Lógica de imagens para Cloudinary
+        # Lógica de imagens para Cloudinary (mantida)
         try:
             imagens_resultado = []
+            # O eager loading na rota get_planta garante que self.imagens já está populado
             for img in self.imagens:
-                url_final = limpar_url_cloudinary(img.cloudinary_url) # Supondo que você tenha a função limpar_url_cloudinary
+                url_final = limpar_url_cloudinary(img.cloudinary_url)
                 imagens_resultado.append({
                     'id_imagem': img.id_imagem,
                     'cloudinary_url': img.cloudinary_url,
@@ -95,38 +102,41 @@ class Planta(db.Model):
             data['imagens'] = []
 
         if include_relations:
-            # Estrutura de usos com os nomes de ID CORRIGIDOS
-            partes_com_indicacoes = []
+            # ✅ CORREÇÃO PRINCIPAL: Construir a estrutura 'partes_usadas' exatamente como no código local
+            partes_usadas_list = []
             for uso in self.usos_planta:
                 parte_data = {
                     'id_uso': uso.parte_usada.id_uso,
                     'parte_usada': uso.parte_usada.parte_usada,
                     'indicacoes': [{'id_indicacao': ind.id_indicacao, 'descricao': ind.descricao} 
                                   for ind in uso.indicacoes],
-                    # ✅ CORREÇÃO 1: Usar id_preparacao e met.descricao
-                    'metodos_preparacao': [{'id_metodo': met.id_preparacao, 'metodo': met.descricao} 
+                    'metodos_preparacao': [{'id_preparacao': met.id_preparacao, 'descricao': met.descricao} 
                                          for met in uso.metodos_preparacao],
-                    # ✅ CORREÇÃO 1: Usar id_extraccao e met.descricao
-                    'metodos_extracao': [{'id_metodo': met.id_extraccao, 'metodo': met.descricao} 
-                                       for met in uso.metodos_extracao]
+                    'metodos_extracao': [{'id_extraccao': me.id_extraccao, 'descricao': me.descricao} 
+                                       for me in uso.metodos_extracao],
+                    'observacoes': uso.observacoes
                 }
-                partes_com_indicacoes.append(parte_data)
+                partes_usadas_list.append(parte_data)
             
-            data['partes_com_indicacoes'] = partes_com_indicacoes
-            
-            # Outros relacionamentos
-            if hasattr(self, 'autores'):
-                data['autores'] = [{'id_autor': autor.id_autor, 'nome_autor': autor.nome_autor, 'afiliacao': autor.afiliacao} for autor in self.autores]
-            if hasattr(self, 'provincias'):
-                data['provincias'] = [{'id_provincia': prov.id_provincia, 'nome_provincia': prov.nome_provincia} for prov in self.provincias]
-            if hasattr(self, 'propriedades'):
-                data['propriedades'] = [{'id_propriedade': prop.id_propriedade, 'descricao': prop.descricao} for prop in self.propriedades]
-            if hasattr(self, 'compostos'):
-                data['compostos'] = [{'id_composto': comp.id_composto, 'nome_composto': comp.nome_composto} for comp in self.compostos]
-            if hasattr(self, 'referencias'):
-                data['referencias'] = [ref.to_dict(include_autores=True) for ref in self.referencias]
+            # Estrutura de referências com autores (como no seu código local)
+            referencias_com_autores = []
+            for ref in self.referencias:
+                ref_data = ref.to_dict(include_autores=True)
+                referencias_com_autores.append(ref_data)
+
+            # ✅ Usar data.update() para adicionar todos os campos de uma vez,
+            #    garantindo que a chave 'partes_usadas' seja usada corretamente.
+            data.update({
+                'autores': [autor.to_dict() for autor in self.autores],
+                'provincias': [provincia.to_dict() for provincia in self.provincias],
+                'partes_usadas': partes_usadas_list,  # <--- Chave correta para o frontend
+                'propriedades': [prop.to_dict() for prop in self.propriedades],
+                'compostos': [comp.to_dict() for comp in self.compostos],
+                'referencias': referencias_com_autores
+            })
         
         return data
+
 
 
 class NomeComum(db.Model):
